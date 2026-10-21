@@ -1,0 +1,22 @@
+{
+  "name": "adh",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @adh/web",
+    "build": "npm run build --workspace @muca/server && npm run build --workspace @adh/web",
+    "start": "npm run start --workspace @muca/server",
+    "lint": "npm run lint --workspace @adh/web && npm run lint --workspace @muca/server",
+    "typecheck": "npm run typecheck --workspace @muca/server && npm run typecheck --workspace @adh/web",
+    "test": "npm run test --workspace @muca/server"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "overrides": {
+    "zod": "4.6.7"
+  }
+}
