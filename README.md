@@ -73,7 +73,7 @@ The server prints its configuration on boot:
   REST API   http://localhost:8099/api/v1
   MCP        http://localhost:8099/api/v1/mcp
   Protocol   2025-11-25
-  AI gateway  auto → none — the server will run without a model  probes: anthropic not_configured · openai timeout 4004ms · gemini not_configured
+  AI gateway  auto → anthropic (claude-sonnet-4-5)  probes: anthropic ok 1180ms · openai not_configured · gemini throttled 922ms
              No usable AI provider — MCP, the tools and the demo mode still work.
 ```
 
@@ -290,7 +290,7 @@ hardcoded, and **never commit `.env`** — it is git-ignored.
 ## Testing
 
 ```bash
-npm test          # 250 backend + 26 frontend tests
+npm test          # 260 backend + 26 frontend tests
 npm run typecheck # both workspaces
 npm run lint      # both workspaces
 npm run build     # production build of both apps
