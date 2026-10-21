@@ -103,6 +103,65 @@ See `AGENTS/repo_agent_protocol.md` and `AGENTS/TESTER.md`.
 
 <projectInfo>
 
+- [2026-10-21T19:35:00+06:00] **BACKEND and FRONTEND both returned; the P1
+  is fixed and both are committed. One dedicated folder per agent.**
+
+  **BACKEND P1 fix — verified independently, accepted.** Commit `26d568e`.
+  An approval is now an `ApprovedAction` (tool + exact arguments) compared
+  canonically and consumed once. Zod defaults are resolved on both sides
+  through the `ToolRegistry`, so an omitted `baseBranch` and a spelled-out
+  one are the same action. The registry is the authority on which call ids
+  were issued.
+
+  The agent found and closed **two further holes in the same class**, both
+  unprompted and both correct:
+  1. The agent honoured a client-supplied `approvedCallIds` entry without
+     consulting the gate, so an invented id could authorise a destructive
+     call. The bypass is removed.
+  2. Its own first implementation kept an exact-call-id path, on the
+     reasoning that an id identifies an action. That reasoning was wrong:
+     the model may reuse a call id. The id now only records provenance;
+     the arguments decide.
+
+  Coordinator's independent probe (`tests/approval-gate-adversarial.test.ts`,
+  8 assertions, written from the threat model rather than from the agent's
+  tests) passes — including one that passes `fallback: async () => true` to
+  prove the gate never consults a client-supplied shortcut. Full suite:
+  **154 tests across 13 files**, typecheck and lint clean.
+
+  **FRONTEND — verified, accepted.** Commit `fda441c`. The browser is a
+  real MCP client (`@modelcontextprotocol/sdk` `Client` +
+  `StreamableHTTPClientTransport`) against the same-origin `/api/v1/mcp`:
+  live session id, negotiated `2025-11-25`, discovered tools, raw JSON-RPC
+  log. Timeline instead of a chat transcript; artifact cards for
+  deployments, CI failures, branches, PRs and issues; labelled scripted
+  demo mode that works with no API key.
+  Verified: typecheck, lint and **production build** clean; 10 captured
+  screenshots under `/tmp/opencode/shots-final/` reviewed by the
+  coordinator.
+
+  **Agent folders.** Commit `ed02c23`. Every agent now has its own
+  channel: `AGENTS/BACKEND/`, `AGENTS/FRONTEND/`, `AGENTS/TESTER/`, each
+  with `TASK.md` / `TASK-COMPLETE.md` / `SUMMARY.md` / `summaries/` /
+  `README.md`. `AGENTS/INDEX.md` is the map; the protocol and both app
+  `AGENT.md` files point at the new paths.
+
+  **Hygiene fix.** The root `.gitignore` only ignored `/node_modules`, so a
+  Vitest cache under `apps/server/node_modules` had been committed. Now
+  `node_modules/` at any depth, plus `.muca/`.
+
+  **Open, known issues:**
+  - `diagnose_incident` is registered only in the MCP layer, so
+    `GET /api/v1/tools` and `/health` report **9** tools while `tools/list`
+    reports **10**. The UI unions both and stays correct, but the two
+    catalogues should agree. Dispatched as a small BACKEND task.
+  - The demo-mode timeline can show an earlier, cancelled attempt as
+    `DECLINED` above a fresh `WAITING` row for the same tool. Cosmetic;
+    it is genuine history, not a duplicate.
+  - Muca's use case and the Bedrock-vs-OpenAI default are still the
+    coordinator's proposed defaults (Ops Copilot; OpenAI default with
+    Bedrock implemented and selectable), not confirmed by the owner.
+
 - [2026-10-21T17:00:00+06:00] **BACKEND agent returned; reviewed and
   committed. One P1 safety finding dispatched as a follow-up.**
 

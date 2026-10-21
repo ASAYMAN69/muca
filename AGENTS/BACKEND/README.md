@@ -31,4 +31,5 @@ The full protocol is in `AGENTS/repo_agent_protocol.md`.
 | Date | Task | Summary |
 |---|---|---|
 | 2026-10-21 | Placeholder tools → Ops Copilot tool set, Elicitation, MCP Tasks, Bedrock, run history | `summaries/2026-10-21-protocol-native-upgrade.md` |
-| 2026-10-21 | P1: bind the HTTP approval to the parked action | `SUMMARY.md` / `TASK-COMPLETE.md` |
+| 2026-10-21 | P1: bind the HTTP approval to the parked action | `summaries/2026-10-21-p1-approval-binding.md` |
+| 2026-10-21 | Align the REST tool catalogue with MCP (in flight) | — |

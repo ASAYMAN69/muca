@@ -30,4 +30,4 @@ The full protocol is in `AGENTS/repo_agent_protocol.md`.
 
 | Date | Task | Summary |
 |---|---|---|
-| 2026-10-21 | Chat transcript → timeline, artifact cards, live MCP session panel, demo mode | `SUMMARY.md` (round 1 in `summaries/2026-10-21-round-1-product.md`) |
+| 2026-10-21 | Chat transcript → timeline, artifact cards, live MCP session panel, demo mode | `summaries/2026-10-21-round-1-summary.md` |
