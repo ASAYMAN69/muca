@@ -10,6 +10,11 @@ import {
   type ApprovedAction,
 } from '../ai/approval-gate.js';
 import type { ToolRegistry } from '../tools/registry.js';
+import {
+  buildCatalogue,
+  toHealthJson,
+  toJson,
+} from '../tools/catalogue.js';
 import { SERVER_NAME, SERVER_VERSION } from '../mcp/server.js';
 import type { RunHistoryStore, RunRecord } from '../store/run-history.js';
 import type {
@@ -89,24 +94,15 @@ export function createApiRouter(deps: {
         enabled: deps.provider !== null,
         provider: deps.provider?.name ?? null,
       },
-      tools: deps.registry.list().map((tool) => ({
-        name: tool.name,
-        title: tool.title,
-        description: tool.description,
-        destructive: tool.destructive,
-      })),
+      // The same catalogue the MCP server advertises, so the two can
+      // never disagree about Muca's tool surface.
+      tools: catalogue().map(toHealthJson),
     });
   });
 
   router.get('/tools', (_req: Request, res: Response) => {
     res.json({
-      tools: deps.registry.list().map((tool) => ({
-        name: tool.name,
-        title: tool.title,
-        description: tool.description,
-        destructive: tool.destructive,
-        inputSchema: tool.inputSchema.shape,
-      })),
+      tools: catalogue().map(toJson),
     });
   });
 
@@ -273,6 +269,17 @@ export function createApiRouter(deps: {
     }
     res.json({ task });
   });
+
+  /**
+   * The full tool catalogue.
+   *
+   * Built from the same declaration the MCP server registers from, so
+   * `GET /api/v1/tools`, `GET /api/v1/health` and MCP `tools/list` always
+   * describe the same set.
+   */
+  function catalogue() {
+    return buildCatalogue(deps.registry.list());
+  }
 
   return router;
 }

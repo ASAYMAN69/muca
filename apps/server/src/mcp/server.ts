@@ -104,7 +104,6 @@ export function createMcpServer(deps: McpServerDeps): BuiltMcpServer {
 
   return { server, taskStore };
 }
-
 function registerToolWithSdk(
   server: McpServer,
   tool: MucaTool,

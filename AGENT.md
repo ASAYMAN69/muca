@@ -103,6 +103,43 @@ See `AGENTS/repo_agent_protocol.md` and `AGENTS/TESTER.md`.
 
 <projectInfo>
 
+- [2026-10-21T20:10:00+06:00] **New requirement: AI provider gateway with
+  parallel probing. Dispatched to BACKEND.**
+
+  The operator wants Muca to work with whichever key they have, instead of a
+  single hardcoded provider:
+
+  - `ANTHROPIC_{API_KEY,ENDPOINT,MODEL}`, `OPENAI_{API_KEY,ENDPOINT,MODEL}`,
+    `GEMINI_API_KEY` (key only; endpoint and model defaulted).
+  - `AI_PROVIDER=auto` (new default): probe every configured endpoint **in
+    parallel** at startup and use the highest priority that answers —
+    **anthropic > openai > gemini**.
+  - The probe is a real minimal request (`max_tokens: 1`) with a timeout, and
+    the result is a **status**, not a boolean: `ok` / `throttled` (429 — the
+    key is valid, so it counts as usable) / `invalid_key` / `bad_request` /
+    `unreachable` / `timeout` / `not_configured`.
+  - If both Anthropic and OpenAI pass ⇒ Anthropic. If one passes ⇒ that one.
+    If none pass ⇒ `enabled: false`, and the server still boots: MCP, tools
+    and demo mode do not need a model. Gemini is the lowest priority, not an
+    unconditional fallback.
+  - Explicit `AI_PROVIDER=<name>` still probes for honesty but does **not**
+    silently switch providers.
+  - Scope is the I/O gateway only — prompt in, answer out. MCP, tools and
+    approval are untouched. Bedrock keeps working, outside the auto priority.
+
+  Two new adapters (Anthropic Messages API, Gemini `generateContent`) behind
+  the existing `AIProvider` interface, using global `fetch` — no new
+  dependencies. The known trap: Gemini's `functionCall` has no call id, so
+  the adapter must synthesise a stable unique id per call or the agent loop
+  cannot match tool results back.
+
+  `GET /api/v1/health` keeps `enabled` and `provider` (the web client reads
+  them) and adds `mode` and `probes`. `POST /api/v1/ai/probe` re-runs the
+  probes for the demo without hot-swapping.
+
+  Root `.env.example` already documents the new variables. The 9-vs-10 tool
+  catalogue fix is folded in as Part B of the same task.
+
 - [2026-10-21T19:35:00+06:00] **BACKEND and FRONTEND both returned; the P1
   is fixed and both are committed. One dedicated folder per agent.**
 

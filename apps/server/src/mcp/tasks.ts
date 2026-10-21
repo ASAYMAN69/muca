@@ -10,6 +10,10 @@ import type {
 
 import { createDiagnosis } from '../tools/ops/index.js';
 import type { OpsAdapters } from '../tools/ops/types.js';
+import {
+  TASK_BACKED_TOOLS,
+  type TaskBackedTool,
+} from '../tools/catalogue.js';
 
 /**
  * MCP Tasks — the long-running half of the product.
@@ -181,23 +185,13 @@ export class TaskRunner {
  * issue into one incident, over several ticks. It is registered through
  * `server.experimental.tasks.registerToolTask`, so a client that asks for
  * a task gets a handle immediately instead of a blocking response.
+ *
+ * The tool's *metadata* — its name, title, description and input schema —
+ * is declared once in `src/tools/catalogue.ts`, so the MCP `tools/list`
+ * result and the REST catalogue cannot drift apart. This module owns the
+ * *behaviour*; the catalogue owns the *description*.
  */
-export const DIAGNOSE_TOOL_NAME = 'diagnose_incident';
-
-const diagnoseInputSchema = {
-  service: z
-    .string()
-    .min(1)
-    .max(80)
-    .optional()
-    .describe('The service to diagnose. Omit to use the most recent deployment.'),
-  deploymentId: z
-    .string()
-    .min(1)
-    .max(120)
-    .optional()
-    .describe('A specific deployment to diagnose.'),
-};
+export { DIAGNOSE_TOOL_NAME } from '../tools/catalogue.js';
 
 export interface DiagnosisTaskDeps {
   adapters: OpsAdapters;
@@ -205,7 +199,7 @@ export interface DiagnosisTaskDeps {
 }
 
 /**
- * Registers the task-backed tool on an MCP server.
+ * Registers the task-backed tools on an MCP server.
  *
  * The server must have been constructed with a `taskStore`, otherwise the
  * SDK has nowhere to put the task state.
@@ -216,22 +210,30 @@ export function registerTaskTools(
 ): void {
   const diagnose = createDiagnosis(deps.adapters);
 
+  for (const tool of TASK_BACKED_TOOLS) {
+    registerTaskTool(server, tool, deps, diagnose);
+  }
+}
+
+/** Registers one task-backed tool from the catalogue. */
+function registerTaskTool(
+  server: McpServer,
+  tool: TaskBackedTool,
+  deps: DiagnosisTaskDeps,
+  diagnose: ReturnType<typeof createDiagnosis>,
+): void {
   server.experimental.tasks.registerToolTask(
-    DIAGNOSE_TOOL_NAME,
+    tool.name,
     {
-      title: 'Diagnose incident',
-      description:
-        'Correlate a failing deployment with its CI run and the matching issue, ' +
-        'then return a diagnosis: likely cause, evidence and the next action. ' +
-        'This is long-running, so it returns a task handle that can be polled ' +
-        'for status with tasks/get.',
-      inputSchema: diagnoseInputSchema,
+      title: tool.title,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
         idempotentHint: true,
         openWorldHint: false,
-        title: 'Diagnose incident',
+        title: tool.title,
       },
       // `optional` means: a client that does not support tasks still gets
       // a normal (blocking) call, and a client that does get a task handle.
