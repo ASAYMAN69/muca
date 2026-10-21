@@ -103,6 +103,56 @@ See `AGENTS/repo_agent_protocol.md` and `AGENTS/TESTER.md`.
 
 <projectInfo>
 
+- [2026-10-21T23:30:00+06:00] **TESTER round complete: PASS WITH RISKS.
+  Two P1s found, one fixed by the coordinator, one dispatched. Both
+  remaining fixes are dispatched.**
+
+  The TESTER's report is thorough and, unusually, honest about its own
+  limits: it reported that HEAD moved under it, that the provider gateway
+  landed uncommitted mid-run, and that §G was therefore verified against
+  an uncommitted snapshot. It also confirmed the P1 I had already fixed
+  (argument binding) still holds, and re-verified the fresh-clone install
+  from a clean checkout.
+
+  **Fixed by the coordinator (root, `2af90d6`):** the root `npm run dev`
+  ran only the web workspace, so the command every document pointed at
+  served the frontend and nothing else — `/api/v1/health` was 404 and
+  there was no MCP endpoint. The README promised one process on one port;
+  the script did not do it. Now it runs the server workspace, which
+  mounts Next.js itself. Verified live: `/` 200, `/api/v1/health` 200,
+  `/api/v1/mcp` 400 (alive). The README was also rewritten: it still
+  described the placeholder note tools, a single OpenAI provider and the
+  old boot banner.
+
+  **P1 (fixed, `9587bc1`):** a spent approval can be **replayed**. The
+  pending-approval registry retires a consumed id only when the run does
+  *not* park, so if the run parks again on a different action the stale
+  entry stays and re-authorises its action. Reproduced with a new
+  regression test that fails by design.
+
+  **P2 (dispatched to BACKEND):** `readOnlyHint` is derived from the
+  *destructive* flag, so `create_issue` and `comment_on_issue` are
+  published as read-only even though they write. The two axes are
+  different and the catalogue must carry both.
+
+  **P2 (dispatched to FRONTEND):** the timeline shows **two rows** for a
+  parked tool call, one wrongly labelled `DECLINED`. Root cause: the
+  server's event union uses `id` for tool events and `callId` for the two
+  approval events, while the frontend's parser reads `record.id` for
+  every type — so the fold that turns a call into its approval row never
+  matches. The frontend also has **no test suite at all**; one is
+  required.
+
+  **Also dispatched (BACKEND):** the task-timeout test is flaky — the
+  runner's deadline check depends on `setTimeout` jitter. A judge running
+  `npm test` must not see a coin flip.
+
+  **Verified working (coordinator):** the provider gateway boots with no
+  keys (`auto → none`, all three `not_configured`, `enabled: false`), and
+  the timeout path is real — with the dummy local key the OpenAI probe
+  timed out after 4004 ms and the server still booted. 229 tests across
+  17 files; typecheck and lint clean.
+
 - [2026-10-21T20:10:00+06:00] **New requirement: AI provider gateway with
   parallel probing. Dispatched to BACKEND.**
 
