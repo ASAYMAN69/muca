@@ -116,7 +116,33 @@ app starts with **no** `.env` at all.
    the timeline show a stale `DECLINED` row next to a fresh `WAITING` row
    for the same tool? Report severity and reproduction steps if so.
 
-### G. Regression suite
+### G. AI provider gateway
+
+1. With **no** keys at all and `AI_PROVIDER=auto`: the server boots, `/health`
+   reports `enabled: false` with every provider `not_configured`, and the
+   demo mode still runs. A missing model must never stop the server.
+2. Point the endpoints at local stubs (`/tmp/opencode/`, not in the repo)
+   and verify the selection:
+   - Anthropic 200 + OpenAI 200 ⇒ **anthropic**;
+   - Anthropic 401 + OpenAI 200 ⇒ **openai**;
+   - OpenAI 401 + Gemini 200 ⇒ **gemini**;
+   - all fail ⇒ `enabled: false`, not a silent Gemini selection.
+3. A **429** must count as usable (the key is valid, it is throttled); a
+   **401** must not.
+4. **Parallelism:** with three stubs that each delay 800ms and a
+   `AI_PROBE_TIMEOUT_MS` of 4000, startup must take roughly 800ms, not
+   2400ms. Measure it.
+5. **Timeout:** a stub that never answers must be classified `timeout` and
+   must not delay the other two.
+6. Keys must never appear in a log line, an error message or `/health`, and
+   must never be in a URL query string.
+7. `POST /api/v1/ai/probe` re-runs the probes and reports `applied: false`;
+   the provider in use does not change.
+8. Gemini tool calls: two calls to the **same** tool in one turn must both
+   resolve back to their own results. This is the id-synthesis trap — if it
+   is wrong, the second result returns the first result's data.
+
+### H. Regression suite
 
 Run and record exact output:
 
@@ -153,8 +179,11 @@ These are already known and accepted. Confirm them only if they are worse
 than described, and say so explicitly:
 
 - `GET /api/v1/tools` and `/health` reported 9 tools while MCP reported 10.
-  A BACKEND task is aligning them; verify at the time you test and report
-  the actual state.
+  The BACKEND task in flight aligns them; verify at the time you test and
+  report the actual state.
+- The AI gateway (section G) is **new** and is being written by the same
+  BACKEND task. Test the tree as it stands when you start; if it is not
+  present, say so rather than inventing results.
 - The `DECLINED`-next-to-`WAITING` cosmetic issue in §F6.
 - `next dev` may fail on `next/font/google` in a sandbox without network.
   The production build is the supported path; note it if it fails, but it
