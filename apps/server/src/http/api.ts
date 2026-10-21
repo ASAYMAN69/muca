@@ -21,6 +21,9 @@ import type {
   PendingApproval,
   PendingApprovalRegistry,
 } from '../store/pending-approvals.js';
+import type { AiState } from '../ai/ai-state.js';
+import type { GatewayDecision } from '../ai/gateway.js';
+import type { ProbeResult } from '../ai/probe.js';
 import { isTerminalStatus, type TaskStatus } from '../mcp/tasks.js';
 import { randomUUID } from 'node:crypto';
 
@@ -65,6 +68,23 @@ export function createApiRouter(deps: {
   listTasks?: () => Promise<TaskSnapshotLike[]>;
   /** The audit sink the approval decisions are written to. */
   approvalAudit?: ApprovalAudit;
+  /**
+   * The gateway's state.
+   *
+   * `enabled` and `provider` are reported exactly as the web client
+   * expects them; `mode`, `selectedAt` and `probes` are additive.
+   */
+  ai?: AiState;
+  /**
+   * Re-runs the provider probes.
+   *
+   * A diagnostic, not a hot-swap: the provider in use does not change.
+   */
+  probe?: () => Promise<{
+    probes: ProbeResult[];
+    applied: false;
+    decision: GatewayDecision;
+  }>;
 }): Router {
   const router = Router();
 
@@ -91,8 +111,18 @@ export function createApiRouter(deps: {
         url: deps.mcpUrl,
       },
       ai: {
+        // `enabled` and `provider` are exactly what the web client reads.
         enabled: deps.provider !== null,
         provider: deps.provider?.name ?? null,
+        // Additive: the gateway's detail.
+        ...(deps.ai
+          ? {
+              model: deps.ai.model,
+              mode: deps.ai.mode,
+              selectedAt: deps.ai.selectedAt,
+              probes: deps.ai.probes,
+            }
+          : {}),
       },
       // The same catalogue the MCP server advertises, so the two can
       // never disagree about Muca's tool surface.
@@ -268,6 +298,44 @@ export function createApiRouter(deps: {
       return;
     }
     res.json({ task });
+  });
+
+  /* ------------------------------------------------------------------ */
+  /* The AI gateway                                                      */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Re-runs the provider probes.
+   *
+   * A **diagnostic**, not a hot-swap: the provider this process is using
+   * does not change. `applied: false` says so explicitly.
+   */
+  router.post('/ai/probe', async (_req: Request, res: Response) => {
+    if (!deps.probe) {
+      res.status(501).json({ error: 'The probe endpoint is not configured.' });
+      return;
+    }
+
+    try {
+      const result = await deps.probe();
+      res.json({
+        // The probes that just ran.
+        probes: result.probes,
+        // What the gateway *would* pick, given these results.
+        wouldSelect: result.decision.selected,
+        // The provider in use for this process — unchanged.
+        provider: deps.provider?.name ?? null,
+        // Always false: this endpoint does not change the live provider.
+        applied: false,
+        message:
+          'These are fresh probe results. The provider in use for this process is unchanged.',
+      });
+    } catch (error) {
+      res.status(500).json({
+        error:
+          error instanceof Error ? error.message : 'The probe failed unexpectedly.',
+      });
+    }
   });
 
   /**

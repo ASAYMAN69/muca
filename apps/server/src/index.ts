@@ -1,12 +1,12 @@
 import { loadEnv } from './paths.js';
 import { startServer } from './server.js';
-import type { AppConfig } from './config.js';
+import { formatDecision } from './ai/gateway.js';
 
 loadEnv();
 
 async function main(): Promise<void> {
   const server = await startServer();
-  const { config } = server;
+  const { config, ai } = server;
 
   console.log('');
   console.log('  Muca — Amazon Developer Hackathon 2026 (Alexa+ track)');
@@ -15,9 +15,23 @@ async function main(): Promise<void> {
   console.log(`  REST API   http://localhost:${config.port}/api/v1`);
   console.log(`  MCP        ${config.mcp.publicUrl}`);
   console.log(`  Protocol   ${config.mcp.protocolVersion}`);
+
+  // The gateway's decision, in one line. It never contains a key.
   console.log(
-    `  AI         ${describeProvider(config)}`,
+    `  ${formatDecision(config.ai.requested, {
+      selected: ai.provider,
+      model: ai.model,
+      enabled: ai.enabled,
+      probes: ai.probes,
+    })}`,
   );
+
+  if (!ai.enabled) {
+    console.log(
+      '             No usable AI provider — MCP, the tools and the demo mode still work.',
+    );
+  }
+
   console.log('');
 
   const shutdown = async (signal: string) => {
@@ -28,17 +42,6 @@ async function main(): Promise<void> {
 
   process.on('SIGINT', () => void shutdown('SIGINT'));
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
-}
-
-/** A one-line summary of the configured AI provider. */
-function describeProvider(config: AppConfig): string {
-  if (!config.ai.enabled) {
-    return 'not configured — set OPENAI_API_KEY (or BEDROCK_MODEL_ID for Bedrock)';
-  }
-  if (config.ai.provider === 'bedrock') {
-    return `${config.ai.bedrock.modelId} via Bedrock (${config.ai.bedrock.region})`;
-  }
-  return `${config.ai.openai.model} (${config.ai.openai.baseUrl})`;
 }
 
 main().catch((error) => {

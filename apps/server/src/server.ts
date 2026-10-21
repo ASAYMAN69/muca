@@ -11,9 +11,11 @@ import { ToolRegistry } from './tools/registry.js';
 import { createTools } from './tools/index.js';
 import { createMockOpsAdapters } from './tools/ops/mock.js';
 import type { OpsAdapters } from './tools/ops/types.js';
-import { OpenAIProvider } from './ai/openai-provider.js';
-import { BedrockProvider } from './ai/bedrock-provider.js';
 import type { AIProvider } from './ai/provider.js';
+import { createProvider } from './ai/provider-factory.js';
+import { gatewayInput, selectProvider, type GatewayDecision } from './ai/gateway.js';
+import type { ProbeResult } from './ai/probe.js';
+import type { AiState } from './ai/ai-state.js';
 import { SYSTEM_PROMPT } from './ai/prompt.js';
 import {
   RunHistoryStore,
@@ -29,6 +31,8 @@ export interface BuiltServer {
   registry: ToolRegistry;
   mcp: McpHttpHandler;
   runHistory: RunHistoryStore;
+  /** The gateway's decision: which provider is in use, and how it went. */
+  ai: AiState;
   close: () => Promise<void>;
 }
 
@@ -47,18 +51,25 @@ export async function buildServer(): Promise<BuiltServer> {
   const registry = new ToolRegistry().registerAll(createTools(adapters));
   const mcp = new McpHttpHandler(registry, adapters);
 
-  const provider: AIProvider | null = config.ai.enabled
-    ? config.ai.provider === 'bedrock'
-      ? new BedrockProvider({
-          model: config.ai.bedrock.modelId,
-          region: config.ai.bedrock.region,
-        })
-      : new OpenAIProvider({
-          apiKey: config.ai.openai.apiKey,
-          baseUrl: config.ai.openai.baseUrl,
-          model: config.ai.openai.model,
-        })
-    : null;
+  // The gateway probes every configured endpoint in parallel and picks
+  // the highest-priority one that actually answers.
+  const decision: GatewayDecision = await selectProvider(gatewayInput(config));
+  const ai: AiState = {
+    enabled: decision.enabled,
+    provider: decision.selected,
+    model: decision.model,
+    mode: config.ai.mode,
+    selectedAt: new Date().toISOString(),
+    probes: decision.probes,
+  };
+
+  // The config records what the gateway decided, so everything that reads
+  // the config sees the same truth.
+  config.ai.selected = decision.selected;
+  config.ai.model = decision.model;
+  config.ai.enabled = decision.enabled;
+
+  const provider: AIProvider | null = createProvider(config, decision.selected);
 
   const runHistory = new RunHistoryStore(
     config.runHistoryDir
@@ -111,6 +122,8 @@ export async function buildServer(): Promise<BuiltServer> {
       pendingApprovals,
       getTask: readTask,
       listTasks: listTasks,
+      ai,
+      probe: () => reProbe(config),
     }),
   );
 
@@ -154,7 +167,7 @@ export async function buildServer(): Promise<BuiltServer> {
     await nextApp.close?.();
   };
 
-  return { app, httpServer, config, registry, mcp, runHistory, close };
+  return { app, httpServer, config, registry, mcp, runHistory, ai, close };
 
   /* ------------------------------------------------------------------ */
   /* Task helpers                                                       */
@@ -199,6 +212,19 @@ export async function buildServer(): Promise<BuiltServer> {
       lastUpdatedAt: task.lastUpdatedAt,
       ...(task.statusMessage ? { statusMessage: task.statusMessage } : {}),
     }));
+  }
+
+  /**
+   * Re-runs the probes.
+   *
+   * This is a **diagnostic**, not a hot-swap: the provider in use for
+   * this process does not change. The response says so explicitly.
+   */
+  async function reProbe(
+    current: AppConfig,
+  ): Promise<{ probes: ProbeResult[]; applied: false; decision: GatewayDecision }> {
+    const decision = await selectProvider(gatewayInput(current));
+    return { probes: decision.probes, applied: false, decision };
   }
 }
 
