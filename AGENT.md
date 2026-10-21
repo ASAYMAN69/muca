@@ -100,6 +100,52 @@ See `AGENTS/repo_agent_protocol.md` and `AGENTS/TESTER.md`.
 
 <projectInfo>
 
+- [2026-10-21T17:00:00+06:00] **BACKEND agent returned; reviewed and
+  committed. One P1 safety finding dispatched as a follow-up.**
+
+  Accepted: Elicitation, MCP Tasks, Bedrock adapter, Ops Copilot tool set,
+  run history, new REST routes. **118 backend tests pass, typecheck and
+  lint clean**, verified independently by the coordinator (not taken on
+  trust).
+
+  Independently verified by the coordinator:
+  - Live MCP handshake over real HTTP: `serverInfo` = `muca-mcp 0.2.0`,
+    capabilities now include `tasks: {list, cancel, requests}`.
+  - `tools/list` returns the Ops Copilot set with `destructiveHint` on
+    `create_branch` and `open_pull_request`.
+  - A destructive tool called by a client **without** the elicitation
+    capability is correctly refused ("The user declined to run
+    create_branch. Nothing was changed.") — the fail-closed path works.
+  - The mock adapters are deterministic across instances and across calls,
+    and the data genuinely correlates (deployment `ciRunId` → CI run →
+    matching open issue), so a real multi-step agent workflow works.
+  - Path traversal through the run-id parameter is contained.
+  - The frontend contract lines up: the BACKEND agent's response shapes
+    match what the FRONTEND agent has already written in
+    `apps/web/lib/api.ts`. The backend returns **no** `artifacts` field and
+    the frontend correctly treats it as absent.
+
+  **P1 finding (dispatched to the BACKEND agent).** The web (HTTP)
+  approval path binds the approval to the **tool name**, not to the
+  **arguments the user actually saw**. Reproduced against the live code:
+  the user approved `create_branch(name="feature/approved")` and the
+  server executed `create_branch(name="attacker-controlled")`. The
+  `PendingApprovalRegistry` stores the parked arguments but does not
+  consult them when matching. This undermines the product's central
+  "permission-aware" claim and is exactly what a judge probing the
+  permission model would find.
+
+  The **MCP/elicitation path is not affected** — the server asks the
+  client inside the same tool call, with that call's arguments.
+
+  A regression test already exists and currently **fails**:
+  `apps/server/tests/approval-argument-binding.test.ts`. It is the
+  specification for the follow-up task.
+
+  Also noted: the previous task's claim that the baseline `typecheck` and
+  `lint` were already failing is **true** — the coordinator had not run
+  them since the frontend work began. Both are now clean.
+
 - [2026-10-21T14:25:00+06:00] **Plan written; two parallel tasks dispatched.**
   `AGENTS/PLAN.md` records the full strategy: why MCP `2025-11-25` over
   Streamable HTTP is the qualifying requirement for the Alexa+ track
