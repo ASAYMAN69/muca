@@ -103,6 +103,58 @@ See `AGENTS/repo_agent_protocol.md` and `AGENTS/TESTER.md`.
 
 <projectInfo>
 
+- [2026-10-22T00:40:00+06:00] **The app has now been run against a real
+  model. Three real defects found and fixed; the demo is unblocked.**
+
+  The owner supplied a Google Gemini key. Until now **no real model call
+  had ever succeeded** — every verification used a stub. Driving the real
+  API found three defects that no stub could have caught, because a stub
+  accepts any request:
+
+  1. **Tool calling was broken against Gemini.** Zod v4 emits a complete
+     JSON Schema document, but a provider accepts a schema *dialect*.
+     Gemini rejected our tool parameters with HTTP 400 on **every** call:
+     `Unknown name "$schema" at
+     'tools[0].function_declarations[0].parameters'`. The probe still
+     passed, because the probe sends no tools. The rejected-keyword list
+     was read back from the API's own errors, not guessed; keywords that
+     carry no meaning are dropped and the ones that do are translated
+     (`const` → single-value `enum`, `exclusiveMinimum` → `minimum`).
+  2. **The default Gemini model no longer exists** — `gemini-2.0-flash`
+     was retired by Google, so a key with no model configured 404s.
+  3. **The probe budget was too tight.** A cold real call takes ~1 s when
+     healthy but up to 20 s when the provider is throttling; a 4 s budget
+     reported a working key as unusable and **silently disabled the
+     agent**. The default is now 10 s.
+
+  Also: Google's free tier is **per model** — `gemini-2.5-flash` allows
+  20 requests a day on this key and was exhausted by testing, while
+  `gemini-2.5-flash-lite` has its own, much larger allowance. The default
+  is now the lite model.
+
+  **Verified live, end to end:** the gateway selected
+  `gemini (gemini-2.5-flash-lite)` with the probe `ok` in ~1.1 s; the
+  agent called `list_deployments`, then `get_deployment` with the id from
+  the first result, and answered from the evidence; a destructive request
+  **parked** with the exact arguments; approving an action the user had
+  not seen was **refused** and parked again (the P1 fix, live); approving
+  the correct action ran the tool — `Created branch "fix-a-bug" from
+  "main".` — and the model summarised it.
+
+  **FRONTEND round accepted** (commit `5be15cd`). The two-row timeline
+  defect is fixed: the server records `approval_decision { approved:
+  false }` *before* it asks, and the old timeline applied that decision
+  on the spot, so the row became DECLINED and the confirmation pushed a
+  second row. Status is now decided in a second pass, after every event
+  is known. Verified by screenshot: one row, `WAITING`, approval card
+  intact. The web app also gained **26 tests** (vitest) — it had none.
+  Note: my own diagnosis of this bug (a `callId`/`id` mismatch) was
+  wrong — the REST layer normalises every event to `id`; the ordering
+  was the real cause.
+
+  The web agent's note that the root `npm test` only ran the server
+  workspace is fixed: it now runs both (250 + 26 = 276 tests).
+
 - [2026-10-21T23:30:00+06:00] **TESTER round complete: PASS WITH RISKS.
   Two P1s found, one fixed by the coordinator, one dispatched. Both
   remaining fixes are dispatched.**
