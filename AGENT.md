@@ -100,6 +100,57 @@ See `AGENTS/repo_agent_protocol.md` and `AGENTS/TESTER.md`.
 
 <projectInfo>
 
+- [2026-10-21T14:25:00+06:00] **Plan written; two parallel tasks dispatched.**
+  `AGENTS/PLAN.md` records the full strategy: why MCP `2025-11-25` over
+  Streamable HTTP is the qualifying requirement for the Alexa+ track
+  (Option A), the judging axes, and the phase plan.
+
+  Research findings that changed the plan (all verified against the pinned
+  SDK, not assumed):
+  - The SDK's `LATEST_PROTOCOL_VERSION` in `1.32.1` **is** `2025-11-25`, so
+    the protocol requirement is satisfied by construction.
+  - **MCP Elicitation exists** in the pinned SDK (`server.elicitInput()`,
+    `ElicitRequestFormParams` / `ElicitRequestURLParams`). This is the
+    protocol-native replacement for our ad-hoc `approvedCallIds` gate.
+  - **MCP Tasks exist** in the pinned SDK
+    (`@modelcontextprotocol/sdk/experimental/tasks/`). This is the
+    protocol-native replacement for a bespoke long-running job system.
+  - Amazon explicitly labels "a basic MCP wrapper around an existing API" as
+    obvious, and credits "agentic workflow that orchestrates across
+    services" plus "state maintained across sessions". The current
+    placeholder tool set is exactly the "wrapper" shape, so it must change.
+  - **Hard deadline: October 23, 2026.** Optimise for a demonstrable,
+    judge-runnable product, not a platform.
+  - Elicitation requires the *client* to declare the `elicitation`
+    capability. A plain browser page cannot receive an elicitation request
+    directly, so the design keeps both paths behind one `ApprovalGate`:
+    Elicitation for MCP clients, HTTP approval for the web client.
+
+  Recommended direction (pending coordinator confirmation): an **Ops
+  Copilot** for solo developers and small teams — deployment/CI failure
+  triage across services, with a permission-aware safety model, seeded mock
+  adapters so judges need no secrets, and Bedrock as a second provider
+  behind the existing `AIProvider` interface (which also qualifies for the
+  separate AWS Builder mini-challenge prize).
+
+  Dispatched in parallel (the contract is already fixed, so neither blocks
+  the other):
+  - `apps/server/AGENT/TASK.md` — BACKEND: `ApprovalGate` + Elicitation,
+    MCP Tasks, Bedrock adapter, Ops Copilot tool set against seeded mocks,
+    session-scoped run history, new REST routes, new tests.
+  - `apps/web/AGENT/TASK.md` — FRONTEND: timeline view instead of a chat
+    transcript, artifact cards, a **visible MCP handshake panel** (session
+    id, discovered tools, raw JSON-RPC log) to prove protocol compliance at
+    runtime, and a clearly-labelled demo mode that works with no API key.
+  - TESTER is invoked once both return.
+
+  Both tasks are written to tolerate a moving backend: the frontend is told
+  to build defensively against the current stable contract and to not
+  block on the backend's new routes.
+
+  **Status:** skeleton shipped and verified (21 tests green, typecheck
+  clean, live MCP handshake confirmed). Awaiting the two agent returns.
+
 - [2026-10-21T14:05:00+06:00] **Skeleton shipped.** The repository is
   restructured into an npm-workspaces monorepo: `apps/server` (Express + MCP
   + agent loop) and `apps/web` (Next.js 16 + React 19 + Tailwind 4). One
