@@ -58,10 +58,12 @@ const envSchema = z.object({
   GEMINI_ENDPOINT: z
     .string()
     .default('https://generativelanguage.googleapis.com/v1beta'),
-  // The default must be a model that actually exists: `gemini-2.0-flash`
-  // has been retired by Google, and a key with no model configured would
-  // otherwise fail with a 404 on the first call.
-  GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
+  // The default must be a model that actually exists, and the free tier
+  // is per model: `gemini-2.0-flash` has been retired by Google, and
+  // `gemini-2.5-flash` is capped at 20 requests a day on the free tier,
+  // which is exhausted by a single demo session. The lite model has its
+  // own, much larger allowance.
+  GEMINI_MODEL: z.string().default('gemini-2.5-flash-lite'),
 
   // --- Bedrock ------------------------------------------------------------
   /** The Bedrock model id. Never hardcoded in source. */
