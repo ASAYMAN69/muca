@@ -225,7 +225,41 @@ silently switches to a different provider.
 
 ---
 
-## Configuration
+## Verified against a real provider
+
+The MCP half is covered by the test suite, but the **AI half has been run
+against the live Google Gemini API**, because that is where the bugs were:
+
+| Step | Result |
+|---|---|
+| Gateway probe | `auto → gemini (gemini-2.5-flash-lite)`, probe `ok` in ~1.1 s |
+| Agent turn | the model called `list_deployments`, then `get_deployment` with the id from the first result, and answered from the evidence |
+| Destructive tool | the run **parked** with the exact arguments and asked for approval |
+| Wrong approval | approving an action the user had not seen was **refused** and parked again |
+| Correct approval | the tool ran — `Created branch "fix-a-bug" from "main".` — and the model summarised it |
+
+Three real defects were found only by doing this, and all three are fixed:
+
+- **Tool calling was broken against Gemini.** Zod emits a complete JSON
+  Schema, but a provider accepts a schema *dialect*; Gemini rejected the
+  `$schema` keyword with HTTP 400 on **every** tool call. The rejected
+  keyword list was read back from the API's own errors, not guessed.
+- **The default Gemini model no longer exists** (`gemini-2.0-flash` was
+  retired by Google).
+- **The probe budget was too tight.** A cold real call can take 20 s when
+  the provider is throttling, and a 4 s budget reported a working key as
+  unusable — which silently disabled the agent.
+
+### A note on the free tier
+
+Google's free tier applies a **per-model** daily request limit. On the key
+this was tested with, `gemini-2.5-flash` allows **20 requests a day** and
+`gemini-2.5-flash-lite` allows far more, which is why the default is the
+lite model. If the agent reports HTTP 429, the quota is spent and it
+recovers on Google's schedule, not ours. The MCP server, the tools and the
+scripted demo mode need no key at all.
+
+---
 
 All configuration lives in `.env` (see `.env.example`). Nothing is
 hardcoded, and **never commit `.env`** — it is git-ignored.
@@ -235,7 +269,7 @@ hardcoded, and **never commit `.env`** — it is git-ignored.
 | `PORT` | `8099` | The single port for the frontend, the API and MCP |
 | `ALLOWED_ORIGINS` | `http://localhost:8099` | CORS allow-list for the API |
 | `AI_PROVIDER` | `auto` | `auto` \| `anthropic` \| `openai` \| `gemini` \| `bedrock` |
-| `AI_PROBE_TIMEOUT_MS` | `4000` | Deadline for a single provider probe |
+| `AI_PROBE_TIMEOUT_MS` | `10000` | Deadline for a single provider probe |
 | `ANTHROPIC_API_KEY` | *(empty)* | Anthropic (Messages API) |
 | `ANTHROPIC_ENDPOINT` | `https://api.anthropic.com` | Anthropic base URL |
 | `ANTHROPIC_MODEL` | *(empty)* | Anthropic model id — **required** to use Anthropic |
@@ -243,6 +277,8 @@ hardcoded, and **never commit `.env`** — it is git-ignored.
 | `OPENAI_ENDPOINT` | `https://api.openai.com/v1` | OpenAI base URL |
 | `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model id |
 | `GEMINI_API_KEY` | *(empty)* | Google Gemini (`generateContent`) |
+| `GEMINI_MODEL` | `gemini-2.5-flash-lite` | Gemini model id — see the note below |
+| `GEMINI_ENDPOINT` | `https://generativelanguage.googleapis.com/v1beta` | Gemini base URL |
 | `BEDROCK_MODEL_ID` | *(empty)* | AWS Bedrock, when `AI_PROVIDER=bedrock` |
 | `AWS_REGION` | `us-east-1` | Bedrock region |
 | `MCP_PROTOCOL_VERSION` | `2025-11-25` | Protocol version advertised by the server |
@@ -254,7 +290,7 @@ hardcoded, and **never commit `.env`** — it is git-ignored.
 ## Testing
 
 ```bash
-npm test          # 229 backend tests across 17 files
+npm test          # 250 backend + 26 frontend tests
 npm run typecheck # both workspaces
 npm run lint      # both workspaces
 npm run build     # production build of both apps
