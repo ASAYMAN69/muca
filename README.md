@@ -1,26 +1,167 @@
-# Muca — Ops Copilot for deployment and CI failures
+# Muca
 
-**Amazon Developer Hackathon 2026 — Alexa+ track, Option A (self-hosted MCP server).**
+**An AI agent that investigates why a deployment broke — and fixes it, but only after you say so.**
 
-Muca is an AI agent that does real work through **MCP tools**. It is not a
-chatbot that only generates text: the model discovers tools over the Model
-Context Protocol, calls them, reads the real results, and answers using them.
+Built for the [Amazon Developer Hackathon 2026](https://developer.amazon.com/en-US/hackathon) (Alexa+ track, Option A: a self-hosted MCP server).
 
-The use case is **deployment and CI failure triage**. A failed rollout is
-correlated with its CI run and the matching issue, the evidence is presented,
-and — **only with an explicit approval** — a branch and a pull request are
-opened with the fix.
+Muca is not a chatbot that generates text. It is an agent that **uses tools**: it discovers them over the [Model Context Protocol](https://modelcontextprotocol.io), calls them, reads the real results, and answers from them. When it wants to change something, it stops and asks.
 
-> **Honesty note:** Muca is **not** integrated with Alexa+. It ships as a
-> custom web client. The MCP server is self-hosted over Streamable HTTP,
-> which is the "Option A" path the hackathon requires.
+---
+
+## What it does
+
+Give it a symptom:
+
+> *Which deployments failed for checkout-api? Use your tools to find out and explain the cause.*
+
+and it does this, live:
+
+```
+list_deployments  { service: "checkout-api" }
+  → dep_1914063509_1  checkout-api/production  failed (a1c93f2)
+get_deployment    { deploymentId: "dep_1914063509_1" }
+  → rolled out to 1/3 replicas then rolled back · health check failed (HTTP 503)
+get_ci_failure    { runId: "run_4821" }
+  → failed at test/unit-tests · 3 assertions failed in checkout/cart.spec.ts
+list_issues       { state: "open" }
+  → #412 "Checkout total rounds up to the wrong amount" (bug, checkout, regression)
+```
+
+and then it tells you the cause — that the failed assertions are the same
+bug as open issue #412, and that the deployment was rolled back because
+the health check failed. Three tools, chained, each one fed by the last.
+
+Then it asks before it acts:
+
+```
+Create branch (name="fix/checkout-rounding", baseBranch="main")
+  CONSEQUENTIAL — Approval required
+   [ Approve & run ]  [ Cancel ]
+```
+
+The branch is created **only** if you approve, and only with exactly the
+arguments you were shown.
+
+---
+
+## Why it is built this way
+
+**MCP is the point, not a wrapper.** Muca is a real MCP server. Any MCP
+client — Claude Desktop, Amazon Q, anything — can connect to
+`/api/v1/mcp` and use its ten tools. The web page is just one client of
+it, and it shows its own live session so you can see the protocol
+traffic rather than take it on trust.
+
+**Safety is the feature.** An approval is a statement about a *specific
+action*, not permission to use a tool. Muca records the tool **and the
+exact arguments** you saw, compares them canonically, and consumes the
+approval once. A later call to the same tool with different arguments is a
+different action and asks again. A call id the server never issued
+authorises nothing. The model cannot talk its way past any of this — the
+decision is made by the server, from the tool being called.
+
+**It works with whatever key you have.** Anthropic, OpenAI and Gemini are
+configured from the environment, **probed in parallel at startup** with a
+real request, and the highest-priority one that answers is used
+(anthropic > openai > gemini). A rate-limited key still counts as valid.
+If none of them answer, the server still boots: the MCP server, the tool
+catalogue and the scripted demo all work without a model.
+
+**One process, one port.** The Express server hosts the API, the MCP
+endpoint and the Next.js frontend together on `8099`. No second port, no
+proxy, no separate dev server.
+
+---
+
+## Quick start
+
+```bash
+npm install
+cp .env.example .env      # then put a key in ANTHROPIC_API_KEY, OPENAI_API_KEY or GEMINI_API_KEY
+npm run dev
+```
+
+Open <http://localhost:8099/>.
+
+The server prints what it decided:
+
+```
+  Muca — Amazon Developer Hackathon 2026 (Alexa+ track)
+  ---------------------------------------------------
+  Frontend   http://localhost:8099/
+  REST API   http://localhost:8099/api/v1
+  MCP        http://localhost:8099/api/v1/mcp
+  Protocol   2025-11-25
+  AI gateway  auto → anthropic (claude-sonnet-4-5)  probes: anthropic ok 1180ms · openai not_configured · gemini throttled 922ms
+```
+
+**No API key is fine.** The MCP server works, the tools are published, and
+the web UI offers a clearly-labelled scripted demo.
+
+### Verify the MCP handshake yourself
+
+```ts
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+
+const client = new Client({ name: 'probe', version: '0.1.0' }, { capabilities: {} });
+await client.connect(new StreamableHTTPClientTransport(new URL('http://localhost:8099/api/v1/mcp')));
+
+console.log(client.getServerVersion());      // { name: 'muca-mcp', version: '0.2.0' }
+console.log(client.getServerCapabilities()); // { tools: …, tasks: … }
+console.log((await client.listTools()).tools.map((t) => t.name));
+await client.close();
+```
+
+---
+
+## The tools
+
+Declared once, in `apps/server/src/tools/catalogue.ts`. The MCP layer and
+the REST layer both derive from it, so they cannot drift apart.
+
+| Tool | Writes | Destructive | Purpose |
+|---|---|---|---|
+| `echo` | no | no | Proves a tool-call round trip |
+| `list_deployments` | no | no | Recent deployments per service, with status, commit and log tail |
+| `get_deployment` | no | no | One deployment, with its CI run and log tail |
+| `get_ci_failure` | no | no | The failing job, step, error and log excerpt |
+| `list_issues` | no | no | Issues by state, with labels |
+| `create_issue` | **yes** | no | Opens an issue from the diagnosis |
+| `comment_on_issue` | **yes** | no | Adds the evidence to an existing issue |
+| `create_branch` | **yes** | **yes** | Creates the fix branch — needs approval |
+| `open_pull_request` | **yes** | **yes** | Opens the PR with the fix — needs approval |
+| `diagnose_incident` | no | no | **Task-backed**: correlates deployment + CI + issue, returns a diagnosis |
+
+`readOnlyHint` and `destructiveHint` are published honestly: six tools are
+read-only, four write, and exactly two are consequential.
+
+`diagnose_incident` uses the MCP **Tasks** API: it returns a task handle
+immediately and the client polls `tasks/get` until it reaches a terminal
+state.
+
+---
+
+## Configuration
+
+Everything lives in `.env` (see `.env.example`). Nothing is hardcoded, and
+`.env` is git-ignored.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | `8099` | The single port for the frontend, the API and MCP |
+| `AI_PROVIDER` | `auto` | `auto` \| `anthropic` \| `openai` \| `gemini` \| `bedrock` |
+| `AI_PROBE_TIMEOUT_MS` | `10000` | Deadline for a single provider probe |
+| `ANTHROPIC_API_KEY` / `_ENDPOINT` / `_MODEL` | — | Anthropic (Messages API) |
+| `OPENAI_API_KEY` / `_ENDPOINT` / `_MODEL` | `gpt-4o-mini` | OpenAI, or any OpenAI-compatible endpoint |
+| `GEMINI_API_KEY` | — | Google Gemini (`generateContent`) |
+| `BEDROCK_MODEL_ID` | — | AWS Bedrock, via the standard AWS credential chain |
+| `MCP_PROTOCOL_VERSION` | `2025-11-25` | Protocol version advertised by the server |
+| `MCP_PUBLIC_URL` | `http://localhost:${PORT}/api/v1/mcp` | Public URL of the MCP endpoint |
 
 ---
 
 ## Architecture
-
-One process, one port. The Express server hosts the Next.js frontend and
-the API side by side.
 
 ```
                       ┌─────────────────────────── PORT 8099 ───────────────────────────┐
@@ -34,11 +175,11 @@ the API side by side.
                       └────────────────────────────────────────────────────────────────┘
 ```
 
-The three concerns are kept apart on purpose:
+Three concerns, kept apart on purpose:
 
-| Layer | Location | Responsibility |
+| Layer | Where | Responsibility |
 |---|---|---|
-| Transport | `apps/server/src/mcp/http-handler.ts` | MCP session lifecycle, protocol negotiation, routing |
+| Transport | `apps/server/src/mcp/` | MCP session lifecycle, protocol negotiation, tasks, elicitation |
 | Tool execution | `apps/server/src/tools/` | Schemas, validation, business behaviour |
 | AI orchestration | `apps/server/src/ai/` | The tool-calling loop, the provider gateway, the approval gate |
 
@@ -47,327 +188,86 @@ The MCP server and the REST API are two front doors onto the same tools.
 
 ---
 
-## Quick start
-
-```bash
-# 1. install
-npm install
-
-# 2. configure (optional — see "AI gateway" below)
-cp .env.example .env
-#    then put a key in ANTHROPIC_API_KEY, OPENAI_API_KEY or GEMINI_API_KEY
-
-# 3. run
-npm run dev
-```
-
-Open <http://localhost:8099>. That single command serves the frontend, the
-REST API and the MCP endpoint on **one port**.
-
-The server prints its configuration on boot:
-
-```
-  Muca — Amazon Developer Hackathon 2026 (Alexa+ track)
-  ---------------------------------------------------
-  Frontend   http://localhost:8099/
-  REST API   http://localhost:8099/api/v1
-  MCP        http://localhost:8099/api/v1/mcp
-  Protocol   2025-11-25
-  AI gateway  auto → anthropic (claude-sonnet-4-5)  probes: anthropic ok 1180ms · openai not_configured · gemini throttled 922ms
-             No usable AI provider — MCP, the tools and the demo mode still work.
-```
-
-**No API key is fine.** Muca boots, the MCP server works, the tool catalogue
-is published, and the web UI offers a clearly-labelled scripted demo.
-
----
-
-## The MCP layer
-
-- **SDK:** `@modelcontextprotocol/sdk@1.32.1` (pinned exactly).
-- **Protocol:** `2025-11-25`, which is `LATEST_PROTOCOL_VERSION` in that SDK
-  release. The server advertises `tools` **and** `tasks` capabilities.
-- **Transport:** Streamable HTTP, **stateful**. A client POSTs an
-  `initialize` request, receives an `Mcp-Session-Id` header, and must send
-  that header on every later request. `GET` opens the server→client SSE
-  stream, `DELETE` tears the session down.
-
-Three protocol-native features are used, not re-implemented:
-
-| Feature | Where it shows up |
-|---|---|
-| **Tools** | 10 tools with JSON-Schema arguments and `destructiveHint` / `readOnlyHint` annotations |
-| **Tasks** | `diagnose_incident` returns a task handle; the client polls `tasks/get` until it reaches a terminal state |
-| **Elicitation** | an MCP client is *asked* for approval inside the tool call, with the exact arguments, and the tool runs only if the client accepts |
-
-### Verifying the protocol by hand
-
-```ts
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-
-const client = new Client({ name: 'probe', version: '0.1.0' }, { capabilities: {} });
-await client.connect(new StreamableHTTPClientTransport(new URL('http://localhost:8099/api/v1/mcp')));
-
-console.log(client.getServerVersion());          // { name: 'muca-mcp', version: '0.2.0' }
-console.log(client.getServerCapabilities());     // { tools: …, tasks: … }
-console.log((await client.listTools()).tools.map((t) => t.name));
-await client.close();
-```
-
-The **web client does the same thing in the browser**: the MCP session panel
-on the right of the UI is a real SDK client against the same-origin
-`/api/v1/mcp`, showing the negotiated protocol version, the live session id,
-the discovered tools and the raw JSON-RPC traffic. Nothing about the
-protocol is mocked.
-
----
-
-## The tools
-
-Declared once in `apps/server/src/tools/catalogue.ts`; the MCP layer and the
-REST layer both derive from it, so they cannot drift apart.
-
-| Tool | Writes? | Destructive | Purpose |
-|---|---|---|---|
-| `echo` | no | no | Proves a tool-call round trip |
-| `list_deployments` | no | no | Recent deployments per service, with status, commit and log tail |
-| `get_deployment` | no | no | One deployment, with its CI run and log tail |
-| `get_ci_failure` | no | no | The failing job, step, error and log excerpt |
-| `list_issues` | no | no | Issues by state, with labels |
-| `create_issue` | **yes** | no | Opens an issue from the diagnosis |
-| `comment_on_issue` | **yes** | no | Adds the evidence to an existing issue |
-| `create_branch` | **yes** | **yes** | Creates the fix branch — requires approval |
-| `open_pull_request` | **yes** | **yes** | Opens the PR with the fix — requires approval |
-| `diagnose_incident` | no | no | **Task-backed**: correlates deployment + CI + issue and returns a diagnosis |
-
-The domain is deployment / CI triage. The adapters are **seeded mocks**
-(`apps/server/src/tools/ops/mock.ts`) — deterministic, correlated, and
-credential-free, so the whole flow is demonstrable without any external
-account. The adapter seam (`OpsAdapters`) is where a real GitHub or
-CI provider would be plugged in.
-
----
-
-## The approval gate
-
-Safety is the product's headline claim, so it is enforced in one place
-(`apps/server/src/ai/approval-gate.ts`) with two front doors:
-
-- **MCP clients** are asked with **Elicitation**, inside the tool call, with
-  that call's exact arguments. A client that does not declare the
-  capability gets a refusal.
-- **The web client** approves over plain HTTP: the server parks the run and
-  hands the client a `pendingCall`.
-
-An approval is an **action, not a tool**. It records the tool *and* the
-exact arguments the user saw, compared canonically and consumed once. A
-later call to the same tool with different arguments is a different action
-and parks again for a fresh confirmation. A call id the server never issued
-authorises nothing.
-
-```
-POST /api/v1/chat  { "message": "open a fix PR" }
-→ { "awaitingConfirmation": true,
-    "pendingCall": { "callId": "call_x", "name": "create_branch",
-                     "arguments": { "name": "fix/checkout-rounding" } } }
-
-POST /api/v1/chat  { "message": "yes", "approvedCallIds": ["call_x"] }
-→ the tool runs — with exactly those arguments
-```
-
----
-
-## The AI gateway
-
-Muca works with whichever key you have. Up to three HTTP endpoints are
-configured from the environment, **probed in parallel at startup** with a
-real minimal request, and the highest-priority one that answers is used:
-
-```
-anthropic  >  openai  >  gemini
-```
-
-A probe is classified, not reduced to a boolean:
-
-| Status | Meaning | Usable? |
-|---|---|---|
-| `ok` | 2xx with a parseable body | yes |
-| `throttled` | 429 — the key is valid, it is rate-limited | **yes** |
-| `invalid_key` | 401 / 403 | no |
-| `bad_request` | other 4xx (bad model id, wrong path) | no |
-| `unreachable` | network error | no |
-| `timeout` | the probe deadline elapsed | no |
-| `not_configured` | no key | no |
-
-If nothing is usable the server **still boots** — MCP, the tools and the
-demo mode do not need a model. Set `AI_PROVIDER=anthropic` (or `openai`,
-`gemini`, `bedrock`) to pin one explicitly; an explicit choice never
-silently switches to a different provider.
-
-`GET /api/v1/health` reports the decision and every probe;
-`POST /api/v1/ai/probe` re-runs the probes on demand.
-
----
-
-## API
-
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/api/v1/health` | Status, protocol version, AI gateway state, tool list |
-| `GET` | `/api/v1/tools` | Tool catalogue with input schemas |
-| `POST` | `/api/v1/chat` | Run the agent. Body: `{ message, history[], approvedCallIds[] }` |
-| `GET` | `/api/v1/runs` | Run history (persisted across restarts) |
-| `GET` | `/api/v1/runs/:id` | One run, with every tool call and its result |
-| `GET` | `/api/v1/tasks` / `/api/v1/tasks/:id` | Long-running task status |
-| `POST` | `/api/v1/ai/probe` | Re-run the provider probes (diagnostic only) |
-| `*` | `/api/v1/mcp` | MCP Streamable HTTP endpoint |
-
----
-
-## Verified against a real provider
-
-The MCP half is covered by the test suite, but the **AI half has been run
-against the live Google Gemini API**, because that is where the bugs were:
-
-| Step | Result |
-|---|---|
-| Gateway probe | `auto → gemini (gemini-2.5-flash-lite)`, probe `ok` in ~1.1 s |
-| Agent turn | the model called `list_deployments`, then `get_deployment` with the id from the first result, and answered from the evidence |
-| Destructive tool | the run **parked** with the exact arguments and asked for approval |
-| Wrong approval | approving an action the user had not seen was **refused** and parked again |
-| Correct approval | the tool ran — `Created branch "fix-a-bug" from "main".` — and the model summarised it |
-
-Three real defects were found only by doing this, and all three are fixed:
-
-- **Tool calling was broken against Gemini.** Zod emits a complete JSON
-  Schema, but a provider accepts a schema *dialect*; Gemini rejected the
-  `$schema` keyword with HTTP 400 on **every** tool call. The rejected
-  keyword list was read back from the API's own errors, not guessed.
-- **The default Gemini model no longer exists** (`gemini-2.0-flash` was
-  retired by Google).
-- **The probe budget was too tight.** A cold real call can take 20 s when
-  the provider is throttling, and a 4 s budget reported a working key as
-  unusable — which silently disabled the agent.
-
-### A note on the free tier
-
-Google's free tier applies a **per-model** daily request limit. On the key
-this was tested with, `gemini-2.5-flash` allows **20 requests a day** and
-`gemini-2.5-flash-lite` allows far more, which is why the default is the
-lite model. If the agent reports HTTP 429, the quota is spent and it
-recovers on Google's schedule, not ours. The MCP server, the tools and the
-scripted demo mode need no key at all.
-
----
-
-All configuration lives in `.env` (see `.env.example`). Nothing is
-hardcoded, and **never commit `.env`** — it is git-ignored.
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `PORT` | `8099` | The single port for the frontend, the API and MCP |
-| `ALLOWED_ORIGINS` | `http://localhost:8099` | CORS allow-list for the API |
-| `AI_PROVIDER` | `auto` | `auto` \| `anthropic` \| `openai` \| `gemini` \| `bedrock` |
-| `AI_PROBE_TIMEOUT_MS` | `10000` | Deadline for a single provider probe |
-| `ANTHROPIC_API_KEY` | *(empty)* | Anthropic (Messages API) |
-| `ANTHROPIC_ENDPOINT` | `https://api.anthropic.com` | Anthropic base URL |
-| `ANTHROPIC_MODEL` | *(empty)* | Anthropic model id — **required** to use Anthropic |
-| `OPENAI_API_KEY` | *(empty)* | OpenAI, or any OpenAI-compatible endpoint |
-| `OPENAI_ENDPOINT` | `https://api.openai.com/v1` | OpenAI base URL |
-| `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model id |
-| `GEMINI_API_KEY` | *(empty)* | Google Gemini (`generateContent`) |
-| `GEMINI_MODEL` | `gemini-2.5-flash-lite` | Gemini model id — see the note below |
-| `GEMINI_ENDPOINT` | `https://generativelanguage.googleapis.com/v1beta` | Gemini base URL |
-| `BEDROCK_MODEL_ID` | *(empty)* | AWS Bedrock, when `AI_PROVIDER=bedrock` |
-| `AWS_REGION` | `us-east-1` | Bedrock region |
-| `MCP_PROTOCOL_VERSION` | `2025-11-25` | Protocol version advertised by the server |
-| `MCP_PUBLIC_URL` | `http://localhost:${PORT}/api/v1/mcp` | Public URL of the MCP endpoint |
-| `RUN_HISTORY_DIR` | `apps/server/.muca/runs` | Where run history is written |
-
----
-
 ## Testing
 
 ```bash
-npm test          # 260 backend + 26 frontend tests
-npm run typecheck # both workspaces
-npm run lint      # both workspaces
-npm run build     # production build of both apps
+npm test          # 286 tests: 260 backend + 26 frontend
+npm run typecheck
+npm run lint
+npm run build
 ```
 
-| Area | File | What it proves |
-|---|---|---|
-| MCP initialisation | `tests/mcp-protocol.test.ts` | `initialize` handshake, capability negotiation, session id |
-| Tool discovery | `tests/mcp-protocol.test.ts` | `tools/list` returns schemas, annotations, destructive hints |
-| Tool execution | `tests/mcp-protocol.test.ts` | `tools/call` runs, validates, rejects bad input |
-| Elicitation | `tests/elicitation.test.ts` | A real client is asked, and a client without the capability is refused |
-| MCP Tasks | `tests/tasks.test.ts` | A task handle is returned, polled and reaches a terminal state |
-| AI tool calling | `tests/agent.test.ts` | The loop calls tools, feeds results back, gates destructive calls, survives provider errors |
-| Approval safety | `tests/approval-*.test.ts` | An approval authorises one action, not one tool; a fabricated id authorises nothing |
-| AI gateway | `tests/provider-gateway.test.ts` | Parallel probes, priority selection, 429 usable / 401 not, timeouts |
-| Provider adapters | `tests/provider-adapters.test.ts` | Anthropic and Gemini map the full conversation, including tool calls |
-| REST API | `tests/api.test.ts`, `tests/api-routes.test.ts` | Health, tools, chat, validation errors, run history |
-| Catalogue | `tests/tool-catalogue.test.ts` | One catalogue feeds MCP and REST; `diagnose_incident` is task-backed |
+| Area | What it proves |
+|---|---|
+| MCP protocol | `initialize`, capability negotiation, session id, `tools/list` with honest annotations, `tools/call` validation, clean errors, session teardown |
+| Elicitation | A real client is asked, and a client without the capability is refused — **fail closed** |
+| MCP Tasks | A task handle is returned, polled, and reaches a terminal state with a result |
+| Approval safety | An approval authorises one *action*, not one tool; a fabricated id authorises nothing; a spent approval cannot be replayed |
+| AI gateway | Parallel probes, priority selection, 429 usable / 401 not, timeouts, no key leakage |
+| Provider adapters | Anthropic and Gemini map the whole conversation, including tool calls and tool results |
+| Frontend | The parser and the timeline, including the parked / cancelled / approved / errored cases |
 
-The MCP tests use the **real** SDK client against a **real** HTTP server —
-nothing is stubbed. The provider tests inject a fake `fetch`, so the suite
-never touches a network.
+The MCP tests use the **real** SDK client against a **real** HTTP server.
+The provider tests inject a fake `fetch`, so the suite never touches the
+network.
 
 ---
 
 ## Layout
 
 ```
-adh/
-├── AGENTS/                     # one folder per agent: tasks + summaries
-├── apps/
-│   ├── server/                 # Express + MCP + agent loop + gateway
-│   │   ├── src/
-│   │   │   ├── ai/             # agent loop, provider gateway, approval gate
-│   │   │   ├── http/           # REST API routes
-│   │   │   ├── mcp/            # MCP server, transport, tasks, elicitation
-│   │   │   ├── store/          # run history, pending approvals
-│   │   │   ├── tools/          # catalogue + Ops Copilot tool implementations
-│   │   │   ├── config.ts       # env parsing
-│   │   │   ├── server.ts       # the single Express app
-│   │   │   └── index.ts        # entrypoint
-│   │   └── tests/
-│   └── web/                    # Next.js + React + Tailwind
-│       ├── app/                # app router + components
-│       └── lib/                # API client, MCP client, timeline, demo
-├── .env.example
-└── package.json                # npm workspaces root
+apps/
+  server/                 Express + MCP + agent loop + gateway
+    src/
+      ai/                 agent loop, provider adapters, gateway, approval gate
+      http/               REST routes
+      mcp/                MCP server, transport, tasks, elicitation
+      store/              run history, pending approvals
+      tools/              catalogue + the Ops Copilot tool implementations
+    tests/
+  web/                    Next.js + React + Tailwind
+    app/                  app router + components
+    lib/                  API client, MCP client, timeline, demo
+AGENTS/                   one folder per agent: task briefs and summaries
 ```
 
 ---
 
-## Known limitations
+## What is real, and what is not
 
-These are deliberate and known — nothing here is a hidden failure.
+Being straight about this, because it matters more than a feature list.
 
-1. **Not integrated with Alexa+.** Muca runs as a web client. No Alexa
-   integration is claimed.
-2. **The ops adapters are seeded mocks.** The triage flow is real, but it
-   reads from a deterministic in-memory world rather than GitHub or a CI
-   provider. The `OpsAdapters` seam is where the real ones go.
-3. **Single-process, no auth.** The API is open. Do not expose it publicly
-   without adding authentication.
-4. **No streaming.** The agent returns the full response at once. The
-   `events` array is already ordered, so streaming can be added later
-   without changing the agent loop.
-5. **Run history is a JSON file per run**, not a database. Fine for a demo
-   and for the "state across sessions" requirement; not a real store.
-6. **The tool adapters write to a mock world**, so a branch or pull request
-   created during a demo does not exist anywhere else.
+- **The MCP server is real.** A standard Streamable HTTP endpoint, the
+  official SDK, protocol `2025-11-25`, with Tasks and Elicitation
+  genuinely used. Any MCP client can connect to it.
+- **The agent loop is real.** It calls tools, reads the results, feeds
+  them back, and grounds its answer in them. The screenshots and the test
+  suite are of the real thing, not a mock.
+- **The ops world is a seeded mock.** The deployments, CI runs and issues
+  are deterministic in-memory fixtures, not your GitHub. The adapter seam
+  (`OpsAdapters`) is where a real provider goes; everything above it
+  already works.
+- **Muca is not integrated with Alexa+.** It ships as a web client. No
+  Alexa integration is claimed.
+- **There is no authentication.** The API and the MCP endpoint are open,
+  by choice, for a local demo. Do not expose it to a public network
+  without adding authentication.
+- **Run history is a JSON file per run**, not a database. It survives a
+  restart, which is enough for a demo, and it is not a real store.
 
-## What is deliberately absent
+## In progress
 
-- No AWS infrastructure. The hackathon does not require it for Option A, and
-  adding it would be scope creep. (Amazon Bedrock is supported as an AI
-  provider, using the standard AWS credential chain — that is a client
-  library, not infrastructure.)
-- No database, no queue, no cache, no Docker, no CI. The brief asks for a
-  straightforward implementation without unnecessary dependencies.
-- No abstraction layers beyond the three the brief explicitly asks to keep
-  separate.
+- A live WebSocket channel that streams the agent's run as it happens,
+  with per-session sequence numbers and replay, so a dropped connection
+  never loses a frame.
+- SQLite persistence for sessions, in `~/.adh/database/`.
+- A user-editable **policy engine**: rules that decide whether a tool may
+  run, so "always ask before opening a pull request" is a setting rather
+  than a hardcoded rule.
+- Detached prompting: the agent can ask you a question and wait.
+
+---
+
+## Licence
+
+MIT.
