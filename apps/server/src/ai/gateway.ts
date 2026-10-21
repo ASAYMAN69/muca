@@ -4,6 +4,7 @@ import {
   probeProviders,
   type ProbeFetch,
   type ProbeResult,
+  type ProbeTarget,
 } from './probe.js';
 
 /**
@@ -77,7 +78,7 @@ export async function selectProvider(
   if (input.requested !== 'auto') {
     const provider = input.requested;
     const config = providerConfig(input, provider);
-    const results = await probeProviders(
+    const results = await probeWithRetry(
       [{ provider, config }],
       { timeoutMs: input.timeoutMs, fetchImpl },
     );
@@ -108,7 +109,7 @@ export async function selectProvider(
     config: providerConfig(input, provider),
   }));
 
-  const probes = await probeProviders(targets, {
+  const probes = await probeWithRetry(targets, {
     timeoutMs: input.timeoutMs,
     fetchImpl,
   });
@@ -126,6 +127,51 @@ export async function selectProvider(
     enabled: selected !== null,
     probes,
   };
+}
+
+/** How long to wait before the second round of probes. */
+const RETRY_PAUSE_MS = 1_500;
+
+/** Waits for `ms` milliseconds. */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/**
+ * Probes the targets, and probes them **again** if none of them answered.
+ *
+ * A probe that fails because of a transient network error must not
+ * disable the agent for the life of the process. The server starts
+ * Next.js and the rest of the stack at the same moment as the probes,
+ * and on a cold machine that was enough to make a healthy endpoint
+ * answer as `unreachable`.
+ *
+ * The second round only happens when the first found nothing, so a
+ * healthy start is not slowed down.
+ */
+async function probeWithRetry(
+  targets: ProbeTarget[],
+  options: { timeoutMs: number; fetchImpl?: ProbeFetch },
+): Promise<ProbeResult[]> {
+  const first = await probeProviders(targets, options);
+  if (first.some((probe) => probe.ok)) return first;
+
+  await delay(RETRY_PAUSE_MS);
+
+  const retry = await probeProviders(targets, options);
+
+  // Keep the better round: a probe that answered beats one that did not.
+  return retry.map((probe, index) => {
+    const previous = first[index];
+    if (!previous) return probe;
+    if (probe.ok && !previous.ok) return probe;
+    if (!probe.ok && previous.ok) return previous;
+    // Both failed: keep the faster failure, which is the more informative
+    // one — a timeout says less than a refused connection.
+    return probe.latencyMs <= previous.latencyMs ? probe : previous;
+  });
 }
 
 /**
