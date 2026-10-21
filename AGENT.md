@@ -103,6 +103,39 @@ See `AGENTS/repo_agent_protocol.md` and `AGENTS/TESTER.md`.
 
 <projectInfo>
 
+- [2026-10-22T01:20:00+06:00] **All three TESTER findings fixed and
+  verified live against the real provider. The tree is clean.**
+
+  BACKEND round accepted (commit `75d1b05`):
+  - R1 (P1): the spent approval is retired unconditionally after the run,
+    and `approvedCallIds` are de-duplicated, so one id cannot authorise
+    two actions.
+  - R2 (P2): `writes` is now an independent axis. Live `tools/list`
+    confirms the annotations are honest — `readOnly=true` for exactly
+    the six read-only tools, `destructive=true` for exactly
+    `create_branch` and `open_pull_request`. The agent also found that
+    `idempotentHint` had the identical flaw and corrected it too.
+  - R3 (P3): the task runner decides expiry by what was waited, not by
+    re-reading the clock; the agent modelled the race (100000/100000
+    deterministic).
+
+  **Live verification with a real model, after the fixes:**
+  - the gateway selects `gemini (gemini-2.5-flash-lite)`;
+  - a destructive request parks with the exact arguments;
+  - **replaying a spent approval is refused** — the run parks again on
+    the very same action and no tool runs (the P1, proven in the real
+    path, not just in a test);
+  - MCP `tools/list` reports 10 tools with correct annotations.
+
+  276 tests pass (250 server + 26 web), typecheck and lint clean, tree
+  clean.
+
+  **Still unverified:** the **Anthropic** adapter has never been run
+  against the real Anthropic API. Only Gemini has. The Anthropic path is
+  structurally the same (a Messages API adapter with the same tool-call
+  mapping) and its unit tests use an injected `fetch`, but the `$schema`
+  class of bug is exactly the kind that only a real endpoint reveals.
+
 - [2026-10-22T00:40:00+06:00] **The app has now been run against a real
   model. Three real defects found and fixed; the demo is unblocked.**
 
