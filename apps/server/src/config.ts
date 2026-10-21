@@ -23,7 +23,12 @@ const envSchema = z.object({
     .default('auto'),
 
   /** How long a single probe may take before it counts as failed. */
-  AI_PROBE_TIMEOUT_MS: z.coerce.number().int().positive().default(4000),
+  // The probe sends one real request, so the budget must tolerate a cold
+  // start and a throttled provider: measured against Google Gemini, a
+  // healthy call takes ~1s but a rate-limited one can take 20s and still
+  // succeed. A short budget would report a working key as unusable and
+  // silently disable the agent, which is worse than a slow boot.
+  AI_PROBE_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
 
   // --- Anthropic ----------------------------------------------------------
   ANTHROPIC_API_KEY: z.string().default(''),
@@ -53,7 +58,10 @@ const envSchema = z.object({
   GEMINI_ENDPOINT: z
     .string()
     .default('https://generativelanguage.googleapis.com/v1beta'),
-  GEMINI_MODEL: z.string().default('gemini-2.0-flash'),
+  // The default must be a model that actually exists: `gemini-2.0-flash`
+  // has been retired by Google, and a key with no model configured would
+  // otherwise fail with a 404 on the first call.
+  GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
 
   // --- Bedrock ------------------------------------------------------------
   /** The Bedrock model id. Never hardcoded in source. */

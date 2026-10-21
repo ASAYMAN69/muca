@@ -19,6 +19,7 @@ import {
   type ApprovalGate,
   type ApprovalRequest,
 } from './approval-gate.js';
+import { toProviderJsonSchema } from './json-schema.js';
 
 export const MAX_TOOL_ROUNDS = 8;
 
@@ -397,12 +398,13 @@ function describeCall(title: string, args: Record<string, unknown>): string {
 }
 
 /**
- * Converts a Zod v4 object schema into a plain JSON Schema object.
+ * Converts a Zod v4 object schema into a provider-safe JSON Schema object.
  *
- * Zod v4 ships `toJSONSchema` natively, so no extra dependency is needed.
- * The `io: 'input'` mode matches what the MCP SDK publishes for tool
- * input schemas (defaults are treated as optional inputs).
+ * The conversion is centralised in `json-schema.ts`, because a provider
+ * accepts a schema *dialect*, not a complete JSON Schema document: Zod's
+ * `$schema` keyword alone makes the live Gemini API reject the request
+ * with HTTP 400.
  */
 function toJsonSchema(schema: z.ZodObject<z.ZodRawShape>): Record<string, unknown> {
-  return z.toJSONSchema(schema, { io: 'input' }) as Record<string, unknown>;
+  return toProviderJsonSchema(schema);
 }
