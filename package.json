@@ -6,7 +6,7 @@
     "apps/*"
   ],
   "scripts": {
-    "dev": "npm run dev --workspace @adh/web",
+    "dev": "npm run dev --workspace @muca/server",
     "build": "npm run build --workspace @muca/server && npm run build --workspace @adh/web",
     "start": "npm run start --workspace @muca/server",
     "lint": "npm run lint --workspace @adh/web && npm run lint --workspace @muca/server",
