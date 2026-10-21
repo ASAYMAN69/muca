@@ -24,10 +24,13 @@ user WHEN to invoke which agent and the exact message to send. Repo agents
 never commit/push; the HEAD reviews and commits.
 
 - FRONTEND/BACKEND task lifecycle: HEAD writes
-  `apps/<repo>/AGENT/TASK.md`; user relays "Read
-  `apps/<repo>/AGENT/TASK.md` and complete it."; the agent works, writes
-  `apps/<repo>/AGENT/SUMMARY.md`, renames `TASK.md` to `TASK-COMPLETE.md`.
-  HEAD archives the summary, resets the marker, and writes the next task.
+  `AGENTS/<AGENT>/TASK.md`; user relays "Read `AGENTS/<AGENT>/TASK.md` and
+  complete it."; the agent works, writes `AGENTS/<AGENT>/SUMMARY.md`, renames
+  `TASK.md` to `TASK-COMPLETE.md`. HEAD archives both to
+  `AGENTS/<AGENT>/summaries/`, resets the marker, and writes the next task.
+- **One agent, one folder (HARD RULE):** `AGENTS/BACKEND/` for BACKEND,
+  `AGENTS/FRONTEND/` for FRONTEND, `AGENTS/TESTER/` for TESTER. Tasks and
+  summaries are never shared across agents. See `AGENTS/INDEX.md`.
 - TESTER reads `AGENTS/TESTER.md` and writes reports to
   `AGENTS/TEST_REPORTS/`.
 
@@ -63,7 +66,7 @@ See `AGENTS/repo_agent_protocol.md` and `AGENTS/TESTER.md`.
   `AGENTS/TEST_REPORTS/`, and never edits product code, `.env`, or commits.
 - Each repo agent owns an isolated, persistent session context. It persists
   natively between tasks; the agent does not need a per-task memory file.
-  `AGENT/SUMMARY.md` is the HEAD handoff. Agents must not rely on the user
+  `AGENTS/<AGENT>/SUMMARY.md` is the HEAD handoff. Agents must not rely on the user
   chat; every task is self-contained.
 - **Single port (HARD RULE):** the Express server in `apps/server` hosts the
   Next.js app in `apps/web` and the API under `/api/v1`. `PORT=8099`. The
@@ -181,10 +184,10 @@ See `AGENTS/repo_agent_protocol.md` and `AGENTS/TESTER.md`.
 
   Dispatched in parallel (the contract is already fixed, so neither blocks
   the other):
-  - `apps/server/AGENT/TASK.md` — BACKEND: `ApprovalGate` + Elicitation,
+  - `AGENTS/BACKEND/TASK.md` — BACKEND: `ApprovalGate` + Elicitation,
     MCP Tasks, Bedrock adapter, Ops Copilot tool set against seeded mocks,
     session-scoped run history, new REST routes, new tests.
-  - `apps/web/AGENT/TASK.md` — FRONTEND: timeline view instead of a chat
+  - `AGENTS/FRONTEND/TASK.md` — FRONTEND: timeline view instead of a chat
     transcript, artifact cards, a **visible MCP handshake panel** (session
     id, discovered tools, raw JSON-RPC log) to prove protocol compliance at
     runtime, and a clearly-labelled demo mode that works with no API key.

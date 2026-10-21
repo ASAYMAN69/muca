@@ -27,34 +27,50 @@ Rules:
 
 ## 2. File layout
 
+Every agent gets **its own folder**, at the workspace root, under `AGENTS/`.
+Tasks and summaries for one agent never share a folder with another agent.
+
 ```
-apps/server/                     apps/web/
-├── AGENT.md                     ├── AGENT.md
-├── AGENT/                       ├── AGENT/
-│   ├── README.md                │   ├── README.md
-│   ├── TASK.md                  │   ├── TASK.md
-│   ├── SUMMARY.md               │   ├── SUMMARY.md
-│   └── TASK-COMPLETE.md         │   └── TASK-COMPLETE.md
+AGENTS/
+├── INDEX.md                     # who owns which folder
+├── PLAN.md, repo_agent_protocol.md, mcp_protocol.md, TESTER.md
+├── BACKEND/
+│   ├── README.md                # what this folder is, and the rules
+│   ├── TASK.md                  # the task in flight (coordinator writes)
+│   ├── TASK-COMPLETE.md         # TASK.md renamed when the task is done
+│   ├── SUMMARY.md               # the handoff report (agent writes)
+│   └── summaries/               # archived summaries, one file per round
+├── FRONTEND/                    # same five entries
+└── TESTER/                      # same five entries
 ```
 
-Optional: the coordinator may archive old summaries to
-`AGENT/summaries/<task-slug>.md` when resetting the task file.
+Rules:
+
+- **One agent, one folder.** BACKEND reads and writes only
+  `AGENTS/BACKEND/`; FRONTEND only `AGENTS/FRONTEND/`; TESTER only
+  `AGENTS/TESTER/`. Never write another agent's folder.
+- The agent's product code still lives in its app (`apps/server`,
+  `apps/web`). The `AGENTS/<AGENT>/` folder is only the **task and
+  summary channel**, not a place for source.
+- Archived summaries are named `summaries/YYYY-MM-DD-<task-slug>.md` so a
+  round can be found by date without opening every file.
 
 ## 3. Task lifecycle
 
-1. **Reset (coordinator).** If `AGENT/TASK-COMPLETE.md` exists, the
-   coordinator reads `SUMMARY.md`, renames `TASK-COMPLETE.md` → `TASK.md`
-   (overwriting the old task), and removes the completed marker. This must
+1. **Reset (coordinator).** If `AGENTS/<AGENT>/TASK-COMPLETE.md` exists, the
+   coordinator reads `SUMMARY.md`, archives both to
+   `AGENTS/<AGENT>/summaries/`, and removes `TASK-COMPLETE.md`. This must
    happen **before** writing a new task.
-2. **Author (coordinator).** The coordinator overwrites `AGENT/TASK.md` with
-   a self-contained task (template below).
-3. **Dispatch (user).** The user tells the repo agent: "Read
-   `apps/<app>/AGENT/TASK.md` and complete it."
+2. **Author (coordinator).** The coordinator overwrites
+   `AGENTS/<AGENT>/TASK.md` with a self-contained task (template below).
+3. **Dispatch (user).** The user tells the agent: "Read
+   `AGENTS/<AGENT>/TASK.md` and complete it." (The agent also reads its own
+   `AGENTS/<AGENT>/README.md` and `apps/<app>/AGENT.md` first.)
 4. **Execute (repo agent).** Work only inside the assigned app.
 5. **Verify (repo agent).** Run the task's verification commands plus the
    repo check suite; record the exact results.
-6. **Report (repo agent).** Overwrite `AGENT/SUMMARY.md`, then rename
-   `AGENT/TASK.md` → `AGENT/TASK-COMPLETE.md`.
+6. **Report (repo agent).** Overwrite `AGENTS/<AGENT>/SUMMARY.md`, then
+   rename `AGENTS/<AGENT>/TASK.md` → `AGENTS/<AGENT>/TASK-COMPLETE.md`.
 7. **Integrate (coordinator).** Read `SUMMARY.md`, review the diff, commit
    and push when satisfied, then prepare the next task.
 
@@ -161,7 +177,7 @@ or large code blocks in any file.
 - **Do not run `git commit` or `git push`.**
 - No subagents; you are a main agent in your own session.
 - No edits to `AGENT.md` unless the task explicitly says so. You may edit
-  `AGENT/SUMMARY.md` and rename `TASK.md`.
+  `AGENTS/<AGENT>/SUMMARY.md` and rename `TASK.md`.
 - Report blockers, environment failures and cross-app dependencies in
   `SUMMARY.md`; do not silently guess.
 

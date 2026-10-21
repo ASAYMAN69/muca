@@ -20,7 +20,8 @@ regressions.
 2. `/mnt/ee/aprojects/zyrun/adh/AGENTS/repo_agent_protocol.md` — boundaries.
 3. `/mnt/ee/aprojects/zyrun/adh/AGENTS/mcp_protocol.md` — the MCP contract
    and its traps.
-4. The relevant `apps/<app>/AGENT/SUMMARY.md` for what changed.
+4. `AGENTS/BACKEND/SUMMARY.md` and `AGENTS/FRONTEND/SUMMARY.md` for what
+   changed.
 5. The diff: `git -C /mnt/ee/aprojects/zyrun/adh status`,
    `git -C /mnt/ee/aprojects/zyrun/adh diff`.
 
@@ -123,11 +124,16 @@ product apps unless the HEAD asks.
 
 ## 6. Report
 
-Write a report to:
+Write the full report to:
 
 ```
 /mnt/ee/aprojects/zyrun/adh/AGENTS/TEST_REPORTS/YYYY-MM-DD-<slug>.md
 ```
+
+Then write the short verdict to your own channel,
+`AGENTS/TESTER/SUMMARY.md` (it points at the full report), and rename
+`AGENTS/TESTER/TASK.md` → `AGENTS/TESTER/TASK-COMPLETE.md`. Your folder is
+`AGENTS/TESTER/`; never write `AGENTS/BACKEND/` or `AGENTS/FRONTEND/`.
 
 Format:
 
