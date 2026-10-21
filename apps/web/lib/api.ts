@@ -33,6 +33,10 @@ export interface HealthResponse {
  * The union is closed on purpose: unknown event types are parsed out into
  * a separate list rather than widening the union, so the timeline can
  * narrow each event without casting.
+ *
+ * Every event that belongs to a tool call carries that call's id in `id`,
+ * whatever the server called it on the wire: `confirmation_required` and
+ * `approval_decision` arrive as `callId`, and the parser normalises them.
  */
 export type AgentEvent =
   | { type: 'text'; text: string }
@@ -88,7 +92,7 @@ function parseAgentEvent(raw: unknown): AgentEvent | null {
   const type = record.type;
   if (typeof type !== 'string') return null;
 
-  const id = typeof record.id === 'string' ? record.id : '';
+  const id = callIdOf(record);
   const name = typeof record.name === 'string' ? record.name : '';
   const args = isRecord(record.arguments) ? record.arguments : {};
 
@@ -130,6 +134,26 @@ function parseAgentEvent(raw: unknown): AgentEvent | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The call id of an event.
+ *
+ * The server's event union uses **two names for the same thing**: `id` on
+ * `tool_call` and `tool_result`, `callId` on `confirmation_required` and
+ * `approval_decision`. Both identify the same tool call, so the id is read
+ * from `callId` first and falls back to `id`.
+ *
+ * Getting this wrong is not cosmetic: the timeline folds a tool call into
+ * its approval row by matching ids, so an empty id would show the judge two
+ * rows for one tool call.
+ */
+function callIdOf(record: Record<string, unknown>): string {
+  if (typeof record.callId === 'string' && record.callId !== '') {
+    return record.callId;
+  }
+  if (typeof record.id === 'string') return record.id;
+  return '';
 }
 
 function asText(value: unknown): string {
