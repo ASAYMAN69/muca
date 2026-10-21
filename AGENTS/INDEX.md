@@ -17,6 +17,7 @@ Read-only / shared docs (nobody's private folder):
 | `PLAN.md` | Strategy, judging axes, phases, open decisions. |
 | `repo_agent_protocol.md` | The task lifecycle and repo boundaries. |
 | `mcp_protocol.md` | Pinned protocol versions, the zod trap, the session contract. |
+| `WS_PROTOCOL.md` | **The shared contract for the live agent**: the socket, the event envelope, the sequence and replay rules, the SQLite schema, the policy engine, caching and compaction. Both the BACKEND and FRONTEND agents build against this one file. |
 | `TESTER.md` | TESTER's scope, report format, severity rules. |
 | `TEST_REPORTS/` | TESTER's reports, one file per round. |
 
