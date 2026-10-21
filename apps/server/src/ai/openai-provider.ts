@@ -42,14 +42,20 @@ export class OpenAIProvider implements AIProvider {
     const completion = await this.client.chat.completions.create({
       model: this.model,
       messages: input.messages.map(toOpenAIMessage),
-      tools: input.tools.map((tool) => ({
-        type: 'function' as const,
-        function: {
-          name: tool.name,
-          description: tool.description,
-          parameters: tool.parameters,
-        },
-      })),
+      // An empty `tools` array is rejected by the API, so the key is
+      // omitted when there is nothing to offer.
+      ...(input.tools.length > 0
+        ? {
+            tools: input.tools.map((tool) => ({
+              type: 'function' as const,
+              function: {
+                name: tool.name,
+                description: tool.description,
+                parameters: tool.parameters,
+              },
+            })),
+          }
+        : {}),
       ...(input.temperature !== undefined
         ? { temperature: input.temperature }
         : {}),

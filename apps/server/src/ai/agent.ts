@@ -21,7 +21,7 @@ import {
 } from './approval-gate.js';
 import { toProviderJsonSchema } from './json-schema.js';
 
-export const MAX_TOOL_ROUNDS = 8;
+export const MAX_TOOL_ROUNDS = 12;
 
 export type AgentEvent =
   | { type: 'text'; text: string }
@@ -332,9 +332,52 @@ export class Agent {
       }
     }
 
+    // The round limit is a safety valve, not a verdict: by the time it is
+    // reached the agent may already have everything it needs. A live run
+    // did eight successful tool calls and then ended with an error and no
+    // answer, which throws away work that was already done.
+    //
+    // So the loop asks the model for a final answer with the tools taken
+    // away. It cannot do more work, it can only report what it found.
+    const summary = await this.summarise(messages);
+
+    if (summary) {
+      events.push({ type: 'text', text: summary });
+      return { text: summary, events, awaitingConfirmation: false, pendingCall: null };
+    }
+
     const message = `Reached the maximum of ${this.maxRounds} tool rounds.`;
     events.push({ type: 'error', message });
     return { text: '', events, awaitingConfirmation: false, pendingCall: null };
+  }
+
+  /**
+   * Asks the model for a final answer, with the tools taken away.
+   *
+   * Returns `null` when the provider cannot answer, so the caller can
+   * fall back to reporting the limit.
+   */
+  private async summarise(messages: ProviderMessage[]): Promise<string | null> {
+    try {
+      const response = await this.provider.chat({
+        messages: [
+          ...messages,
+          {
+            role: 'user',
+            content:
+              'You have run out of tool calls. Summarise what you found, ' +
+              'using the tool results above, and answer the original ' +
+              'question. Do not call any more tools.',
+          },
+        ],
+        tools: [],
+      });
+
+      const text = response.content?.trim();
+      return text && text.length > 0 ? text : null;
+    } catch {
+      return null;
+    }
   }
 
   private parseArguments(
