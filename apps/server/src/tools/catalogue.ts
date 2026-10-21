@@ -47,6 +47,16 @@ export interface CatalogueEntry {
   inputSchema: Record<string, unknown>;
   /** True when the tool changes state irreversibly. */
   destructive: boolean;
+  /**
+   * True when the tool changes state at all — it creates or modifies
+   * something.
+   *
+   * This is independent of `destructive`: opening an issue writes, but
+   * it is not a consequential act. MCP publishes both axes as tool
+   * annotations, and a client uses `readOnlyHint` to decide whether a
+   * call is safe to make unattended.
+   */
+  writes: boolean;
   /** How the tool is invoked. */
   invocation: ToolInvocation;
 }
@@ -103,6 +113,15 @@ export interface TaskBackedTool {
   description: string;
   /** The Zod raw shape the MCP server registers. */
   inputSchema: Record<string, z.ZodTypeAny>;
+  /**
+   * True when the tool changes state. A diagnosis reads, so it is false.
+   *
+   * It lives here, next to the rest of the description, so the MCP
+   * annotations and the REST catalogue are derived from one declaration.
+   */
+  writes: boolean;
+  /** True when the tool changes state irreversibly. */
+  destructive: boolean;
 }
 
 /**
@@ -117,6 +136,9 @@ export const TASK_BACKED_TOOLS: readonly TaskBackedTool[] = [
     title: DIAGNOSE_TITLE,
     description: DIAGNOSE_DESCRIPTION,
     inputSchema: DIAGNOSE_INPUT_SCHEMA,
+    // A diagnosis reads: it does not write, and it is not destructive.
+    writes: false,
+    destructive: false,
   },
 ];
 
@@ -144,6 +166,7 @@ export function buildCatalogue(
     description: tool.description,
     inputSchema: tool.inputSchema.shape as Record<string, unknown>,
     destructive: tool.destructive,
+    writes: tool.writes,
     invocation: { kind: 'sync' },
   }));
 
@@ -153,7 +176,8 @@ export function buildCatalogue(
       title: tool.title,
       description: tool.description,
       inputSchema: tool.inputSchema as Record<string, unknown>,
-      destructive: false,
+      destructive: tool.destructive,
+      writes: tool.writes,
       invocation: { kind: 'task' },
     });
   }
@@ -164,15 +188,18 @@ export function buildCatalogue(
 /**
  * The wire shape of one catalogue entry.
  *
- * `taskBacked` is **additive**: a consumer that ignores it keeps working,
- * and a consumer that reads it knows the tool returns a task handle
- * rather than a plain result.
+ * `taskBacked` and `readOnly` are **additive**: a consumer that ignores
+ * them keeps working, and a consumer that reads them knows the tool
+ * returns a task handle rather than a plain result, and whether it is
+ * safe to call unattended.
  */
 export interface CatalogueEntryJson {
   name: string;
   title: string;
   description: string;
   destructive: boolean;
+  /** True when the tool does not write. The MCP `readOnlyHint`. */
+  readOnly: boolean;
   inputSchema: Record<string, unknown>;
   /** True when the tool is backed by the MCP Tasks lifecycle. */
   taskBacked: boolean;
@@ -185,6 +212,7 @@ export function toJson(entry: CatalogueEntry): CatalogueEntryJson {
     title: entry.title,
     description: entry.description,
     destructive: entry.destructive,
+    readOnly: !entry.writes,
     inputSchema: entry.inputSchema,
     taskBacked: entry.invocation.kind === 'task',
   };
@@ -194,14 +222,17 @@ export function toJson(entry: CatalogueEntry): CatalogueEntryJson {
  * Renders a catalogue entry for `GET /api/v1/health`.
  *
  * The health endpoint has always reported a compact summary. It gains
- * only the `taskBacked` marker, so a consumer can tell a task-backed
- * tool from an ordinary one without a second request.
+ * only the `taskBacked` and `readOnly` markers, so a consumer can tell a
+ * task-backed tool from an ordinary one, and a write from a read, without
+ * a second request.
  */
 export interface HealthToolJson {
   name: string;
   title: string;
   description: string;
   destructive: boolean;
+  /** True when the tool does not write. The MCP `readOnlyHint`. */
+  readOnly: boolean;
   taskBacked: boolean;
 }
 
@@ -212,6 +243,7 @@ export function toHealthJson(entry: CatalogueEntry): HealthToolJson {
     title: entry.title,
     description: entry.description,
     destructive: entry.destructive,
+    readOnly: !entry.writes,
     taskBacked: entry.invocation.kind === 'task',
   };
 }

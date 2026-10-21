@@ -3,9 +3,20 @@ import { z } from 'zod';
 /**
  * A tool that Muca can discover and invoke over MCP.
  *
- * `destructive` marks actions that change state in a way the user cannot
- * trivially undo. The agent refuses to run those without an explicit
- * confirmation from the user.
+ * Two independent axes describe a tool's risk:
+ *
+ *   - `destructive` marks actions that change state in a way the user
+ *     cannot trivially undo. The agent refuses to run those without an
+ *     explicit confirmation from the user.
+ *   - `writes` marks actions that change state **at all** — they create
+ *     something. A write is not necessarily destructive: opening an issue
+ *     writes, but it is not a consequential act.
+ *
+ * Keeping them separate matters because MCP publishes both as tool
+ * annotations (`destructiveHint` and `readOnlyHint`), and a client uses
+ * `readOnlyHint` to decide whether a call is safe to make unattended.
+ * Deriving `readOnlyHint` from `destructive` would publish every
+ * non-destructive write as read-only, which is a protocol lie.
  */
 export interface MucaTool {
   name: string;
@@ -15,6 +26,11 @@ export interface MucaTool {
   inputSchema: z.ZodObject<z.ZodRawShape>;
   /** Marks a consequential action that requires user confirmation. */
   destructive: boolean;
+  /**
+   * Marks an action that changes state — it creates or modifies
+   * something. Defaults to `false` (a read-only tool).
+   */
+  writes: boolean;
   /**
    * The handler receives the *parsed* arguments.
    *

@@ -30,6 +30,11 @@ function defineTool<Shape extends z.ZodRawShape>(config: {
   description: string;
   schema: z.ZodObject<Shape>;
   destructive?: boolean;
+  /**
+   * Marks a tool that changes state. It is independent of `destructive`:
+   * a write is not necessarily a consequential act.
+   */
+  writes?: boolean;
   handler: (
     args: z.infer<z.ZodObject<Shape>>,
   ) => Promise<ToolResult> | ToolResult;
@@ -40,6 +45,7 @@ function defineTool<Shape extends z.ZodRawShape>(config: {
     description: config.description,
     inputSchema: config.schema,
     destructive: config.destructive ?? false,
+    writes: config.writes ?? false,
     handler: config.handler as MucaTool['handler'],
   };
 }

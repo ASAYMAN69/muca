@@ -181,7 +181,12 @@ export function createApiRouter(deps: {
     // The registry is the authority: a call id the server never issued
     // resolves to nothing, so a client cannot invent an approval.
     const approvedCallIds = parsed.data.approvedCallIds;
-    const approvedActions: ApprovedAction[] = approvedCallIds
+    const approvedActions: ApprovedAction[] = [
+      // De-duplicate: a client that sends the same id twice must not get
+      // two approvals out of it. One id is one approval, and it can
+      // authorise at most one action.
+      ...new Set(approvedCallIds),
+    ]
       .map((callId) => deps.pendingApprovals?.get(callId))
       .filter((parked): parked is PendingApproval => Boolean(parked))
       .map((parked) => ({
@@ -223,12 +228,22 @@ export function createApiRouter(deps: {
           arguments: result.pendingCall.arguments,
           at: startedAt,
         });
-      } else {
-        // The run is no longer waiting for anything: clear the parked
-        // approvals it consumed.
-        for (const callId of approvedCallIds) {
-          deps.pendingApprovals?.remove(callId);
-        }
+      }
+
+      // Retire the approvals this run *consumed*, whatever the run did
+      // afterwards.
+      //
+      // An approval is spent the moment it has been resolved into an
+      // action and the run has acted on it. The registry is the authority
+      // on which call ids the server issued, so a stale entry there is a
+      // standing authorisation: a client that replayed the id would get it
+      // resolved into a fresh action and the action would run again.
+      //
+      // The retirement must happen whether the run completed, parked on a
+      // *different* action, or errored — so it is done here, after the
+      // run, and not in an `else` branch.
+      for (const callId of approvedCallIds) {
+        deps.pendingApprovals?.remove(callId);
       }
 
       const record = buildRunRecord({

@@ -231,13 +231,38 @@ describe('TaskRunner', () => {
   });
 
   it('times out a task that runs for too long', async () => {
-    const runner = new TaskRunner(30);
+    // The timeout must be deterministic, not a matter of timer jitter.
+    // The same case is run many times in a row and must *always* time
+    // out. A test that sleeps to avoid the race would prove nothing.
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+      const runner = new TaskRunner(30);
 
-    await expect(
-      runner.run('task_1', [() => undefined, () => undefined], () => undefined),
-    ).rejects.toThrow(/timed out/);
+      await expect(
+        runner.run('task_1', [() => undefined, () => undefined], () => undefined),
+      ).rejects.toThrow(/timed out/);
 
-    expect(runner.activeTimerCount).toBe(0);
+      expect(runner.activeTimerCount).toBe(0);
+    }
+  });
+
+  it('does not time out a task that finishes comfortably before the deadline', async () => {
+    // The other half of the guarantee: a task that finishes in time
+    // must never time out, however the timers land.
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+      const runner = new TaskRunner(5_000);
+      let done = false;
+
+      await runner.run(
+        'task_1',
+        [() => undefined, () => undefined],
+        () => {
+          done = true;
+        },
+      );
+
+      expect(done).toBe(true);
+      expect(runner.activeTimerCount).toBe(0);
+    }
   });
 
   it('cancels every running task at once', async () => {

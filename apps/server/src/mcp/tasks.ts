@@ -103,25 +103,39 @@ export class TaskRunner {
     onDone: () => Promise<void> | void,
   ): Promise<void> {
     const deadline = Date.now() + this.timeoutMs;
+    const timedOut = () =>
+      new Error(`Task ${taskId} timed out after ${this.timeoutMs}ms`);
 
     try {
       for (const step of steps) {
         if (this.cancelled.has(taskId)) return;
 
+        // The budget left before this step. A step that overran the
+        // budget shows up here.
         const remaining = deadline - Date.now();
-        if (remaining <= 0) {
-          throw new Error(`Task ${taskId} timed out after ${this.timeoutMs}ms`);
-        }
+        if (remaining <= 0) throw timedOut();
 
-        await this.delay(taskId, Math.min(DEFAULT_TASK_TICK_MS, remaining));
+        // How long this step may wait.
+        const wait = Math.min(DEFAULT_TASK_TICK_MS, remaining);
+
+        await this.delay(taskId, wait);
         if (this.cancelled.has(taskId)) return;
 
-        if (Date.now() >= deadline) {
-          throw new Error(`Task ${taskId} timed out after ${this.timeoutMs}ms`);
-        }
+        // If the wait consumed the **whole** remaining budget, the task
+        // is expired.
+        //
+        // This is decided by *what was waited*, not by reading the clock
+        // again. `setTimeout` can fire a millisecond early or late, and
+        // the outcome must not depend on that: a task that waited out
+        // its entire budget always times out, and a task that waited
+        // only a tick never does.
+        if (wait >= remaining) throw timedOut();
 
         await step();
       }
+
+      // The last step may itself have overran the budget.
+      if (Date.now() >= deadline) throw timedOut();
 
       if (this.cancelled.has(taskId)) return;
       await onDone();
@@ -227,9 +241,11 @@ function registerTaskTool(
       description: tool.description,
       inputSchema: tool.inputSchema,
       annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
+        // From the catalogue, so the MCP layer and the REST catalogue
+        // cannot disagree. A diagnosis reads; it does not write.
+        readOnlyHint: !tool.writes,
+        destructiveHint: tool.destructive,
+        idempotentHint: !tool.writes,
         openWorldHint: false,
         title: tool.title,
       },

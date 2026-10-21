@@ -104,15 +104,23 @@ export function createMcpServer(deps: McpServerDeps): BuiltMcpServer {
 
   return { server, taskStore };
 }
+
 function registerToolWithSdk(
   server: McpServer,
   tool: MucaTool,
   approvalGate: ApprovalGate,
 ): void {
+  // The annotations come from the catalogue, so the MCP `tools/list` and
+  // the REST catalogue cannot disagree about a tool's risk.
+  //
+  // `readOnlyHint` is true only for a tool that does **not** write. It
+  // is deliberately not derived from `destructive`: "writes" and "needs
+  // approval" are different axes, and publishing a write as read-only
+  // would tell a client it is safe to call unattended when it is not.
   const annotations: ToolAnnotations = {
-    readOnlyHint: !tool.destructive,
+    readOnlyHint: !tool.writes,
     destructiveHint: tool.destructive,
-    idempotentHint: !tool.destructive,
+    idempotentHint: !tool.writes,
     openWorldHint: false,
     title: tool.title,
   };

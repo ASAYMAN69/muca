@@ -28,6 +28,11 @@ function defineTool<Shape extends z.ZodRawShape>(config: {
   description: string;
   schema: z.ZodObject<Shape>;
   destructive?: boolean;
+  /**
+   * Marks a tool that changes state. It is independent of `destructive`:
+   * a write is not necessarily a consequential act.
+   */
+  writes?: boolean;
   handler: (
     args: z.infer<z.ZodObject<Shape>>,
   ) => Promise<ToolResult> | ToolResult;
@@ -38,6 +43,7 @@ function defineTool<Shape extends z.ZodRawShape>(config: {
     description: config.description,
     inputSchema: config.schema,
     destructive: config.destructive ?? false,
+    writes: config.writes ?? false,
     handler: config.handler as MucaTool['handler'],
   };
 }
@@ -222,6 +228,9 @@ export function createOpsTools(adapters: OpsAdapters = createMockOpsAdapters()):
         'Open a new issue describing a failure or a fix. Use it to record a diagnosis ' +
         'that the team should look at.',
       schema: createIssueArgs,
+      // It writes, but it is not consequential: opening an issue does not
+      // need the user's approval.
+      writes: true,
       handler: (args) => {
         const issue = adapters.issues.create({
           title: args.title,
@@ -242,6 +251,8 @@ export function createOpsTools(adapters: OpsAdapters = createMockOpsAdapters()):
         'Add a comment to an existing issue. Use it to attach a diagnosis or a link ' +
         'to a pull request.',
       schema: commentOnIssueArgs,
+      // It writes, but it is not consequential.
+      writes: true,
       handler: (args) => {
         const issue = adapters.issues.comment(args.issueNumber, args.body);
         if (!issue) {
@@ -262,6 +273,8 @@ export function createOpsTools(adapters: OpsAdapters = createMockOpsAdapters()):
         'user is asked to approve it first.',
       schema: createBranchArgs,
       destructive: true,
+      // It writes *and* it is consequential: both axes are set.
+      writes: true,
       handler: (args) => {
         const branch = adapters.git.createBranch({
           name: args.name,
@@ -282,6 +295,8 @@ export function createOpsTools(adapters: OpsAdapters = createMockOpsAdapters()):
         'user is asked to approve it first.',
       schema: openPullRequestArgs,
       destructive: true,
+      // It writes *and* it is consequential: both axes are set.
+      writes: true,
       handler: (args) => {
         const pullRequest = adapters.git.openPullRequest({
           title: args.title,

@@ -137,10 +137,19 @@ describe('the gateway configuration', () => {
   });
 
   it('reads the probe timeout', () => {
-    expect(loadConfig(env({ AI_PROBE_TIMEOUT_MS: '2500' })).ai.probeTimeoutMs).toBe(
-      2500,
+    // An explicit value wins.
+    expect(
+      loadConfig(env({ AI_PROBE_TIMEOUT_MS: '2500' })).ai.probeTimeoutMs,
+    ).toBe(2500);
+
+    // Without one, the schema's default applies. It is read from the
+    // schema rather than hardcoded here, so the two cannot drift.
+    const fallback = loadConfig(env({})).ai.probeTimeoutMs;
+    expect(fallback).toBe(10_000);
+    expect(fallback).toBe(
+      loadConfig(env({ AI_PROBE_TIMEOUT_MS: String(fallback) }))
+        .ai.probeTimeoutMs,
     );
-    expect(loadConfig(env({})).ai.probeTimeoutMs).toBe(4000);
   });
 
   it('treats an Anthropic key without a model as not configured', () => {
