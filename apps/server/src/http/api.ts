@@ -7,11 +7,15 @@ import {
   HttpApprovalGate,
   noopApprovalAudit,
   type ApprovalAudit,
+  type ApprovedAction,
 } from '../ai/approval-gate.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import { SERVER_NAME, SERVER_VERSION } from '../mcp/server.js';
 import type { RunHistoryStore, RunRecord } from '../store/run-history.js';
-import type { PendingApprovalRegistry } from '../store/pending-approvals.js';
+import type {
+  PendingApproval,
+  PendingApprovalRegistry,
+} from '../store/pending-approvals.js';
 import { isTerminalStatus, type TaskStatus } from '../mcp/tasks.js';
 import { randomUUID } from 'node:crypto';
 
@@ -142,17 +146,35 @@ export function createApiRouter(deps: {
     // The gate parks the run until one of them shows up.
     //
     // The model produces a fresh call id on every turn, so the approved
-    // call id is looked up in the registry to find the tool it referred
-    // to. That tool name is then approved for the next call.
+    // call id is looked up in the registry to recover the *parked action*
+    // — the tool **and** the arguments the user actually saw and
+    // approved. The approval then authorises only a call that makes
+    // exactly that action; a call with different arguments is a different
+    // action and parks again for a fresh confirmation.
+    //
+    // The registry is the authority: a call id the server never issued
+    // resolves to nothing, so a client cannot invent an approval.
     const approvedCallIds = parsed.data.approvedCallIds;
-    const approvedToolNames = approvedCallIds
-      .map((callId) => deps.pendingApprovals?.get(callId)?.toolName)
-      .filter((name): name is string => Boolean(name));
+    const approvedActions: ApprovedAction[] = approvedCallIds
+      .map((callId) => deps.pendingApprovals?.get(callId))
+      .filter((parked): parked is PendingApproval => Boolean(parked))
+      .map((parked) => ({
+        callId: parked.callId,
+        toolName: parked.toolName,
+        arguments: parked.arguments,
+      }));
 
     const gate = new HttpApprovalGate(
-      approvedCallIds,
-      approvedToolNames,
+      approvedActions,
       deps.approvalAudit ?? noopApprovalAudit,
+      // Resolve Zod defaults on both sides before comparing, so a call
+      // that omits a defaulted field and a parked call that spelled it
+      // out are the same action.
+      (toolName) => {
+        const tool = deps.registry.get(toolName);
+        if (!tool) return undefined;
+        return (args) => tool.inputSchema.parse(args) as Record<string, unknown>;
+      },
     );
 
     const runId = `run_${randomUUID()}`;

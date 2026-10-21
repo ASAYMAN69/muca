@@ -81,8 +81,10 @@ class RecordingAudit implements ApprovalAudit {
 /* -------------------------------------------------------------------------- */
 
 describe('HttpApprovalGate', () => {
-  it('approves a call id that is on the approved list', async () => {
-    const gate = new HttpApprovalGate(['call_1']);
+  it('approves a call that makes the approved action', async () => {
+    const gate = new HttpApprovalGate([
+      { callId: 'call_1', toolName: 'create_branch', arguments: { name: 'fix/x' } },
+    ]);
 
     const allowed = await gate.request({
       approval: APPROVAL,
@@ -93,8 +95,16 @@ describe('HttpApprovalGate', () => {
     expect(allowed).toBe(true);
   });
 
-  it('refuses a call id that is not on the approved list', async () => {
-    const gate = new HttpApprovalGate(['call_other']);
+  it('refuses a call that is not the approved action', async () => {
+    // Same tool, different arguments: a different action, so it is not
+    // authorised by the approval.
+    const gate = new HttpApprovalGate([
+      {
+        callId: 'call_other',
+        toolName: 'create_branch',
+        arguments: { name: 'something-else' },
+      },
+    ]);
 
     const allowed = await gate.request({
       approval: APPROVAL,
@@ -118,8 +128,12 @@ describe('HttpApprovalGate', () => {
     expect(gate.isPending('call_1')).toBe(true);
   });
 
-  it('approves the next call to a tool that was approved by name', async () => {
-    const gate = new HttpApprovalGate([], ['create_branch']);
+  it('approves the next call that makes the same action', async () => {
+    // The approval is bound to an *action* (tool + arguments), not to a
+    // tool name.
+    const gate = new HttpApprovalGate([
+      { callId: 'call_1', toolName: 'create_branch', arguments: { name: 'fix/x' } },
+    ]);
 
     const allowed = await gate.request({
       approval: APPROVAL,
@@ -130,8 +144,10 @@ describe('HttpApprovalGate', () => {
     expect(allowed).toBe(true);
   });
 
-  it('consumes a tool-name approval so it cannot authorise twice', async () => {
-    const gate = new HttpApprovalGate([], ['create_branch']);
+  it('consumes an action approval so it cannot authorise twice', async () => {
+    const gate = new HttpApprovalGate([
+      { callId: 'call_1', toolName: 'create_branch', arguments: { name: 'fix/x' } },
+    ]);
 
     const first = await gate.request({
       approval: APPROVAL,
@@ -150,7 +166,10 @@ describe('HttpApprovalGate', () => {
 
   it('records the decision in the audit trail', async () => {
     const audit = new RecordingAudit();
-    const gate = new HttpApprovalGate(['call_1'], [], audit);
+    const gate = new HttpApprovalGate(
+      [{ callId: 'call_1', toolName: 'create_branch', arguments: { name: 'fix/x' } }],
+      audit,
+    );
 
     await gate.request({
       approval: APPROVAL,
@@ -319,7 +338,14 @@ describe('The agent and the approval gate', () => {
       provider,
       registry,
       systemPrompt: 'test',
-      approvalGate: new HttpApprovalGate(['call_branch']),
+      // The gate approves the *action* — the tool and its arguments.
+      approvalGate: new HttpApprovalGate([
+        {
+          callId: 'call_branch',
+          toolName: 'create_branch',
+          arguments: { name: 'fix/x', baseBranch: 'main' },
+        },
+      ]),
     });
 
     const result = await agent.run({

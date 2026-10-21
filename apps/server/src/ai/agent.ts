@@ -125,9 +125,11 @@ export class Agent {
    * @param approvalGate The gate a destructive tool must pass. Defaults to
    *   the gate the agent was constructed with.
    * @param approvedCallIds Tool call ids the user has already approved.
-   *   These are honoured regardless of the gate — they are the HTTP
-   *   approval path, and they are also what the elicitation gate falls
-   *   back to when the client cannot be asked.
+   *   These are passed to the gate as *candidates*; the gate decides
+   *   whether they actually authorise this call. The agent never honours
+   *   a raw id on its own — the call id in a tool call comes from the
+   *   model, not from the server, so an id the client invents could
+   *   otherwise authorise an arbitrary destructive call.
    */
   async run(input: {
     history: ProviderMessage[];
@@ -222,17 +224,23 @@ export class Agent {
 
           const source = gate.source ?? 'fallback';
 
-          // A call id the user already approved is honoured directly. This
-          // is the HTTP approval path, and it is also the fallback the
-          // elicitation gate uses when the client cannot be asked.
-          const preApproved = approved.has(call.id);
-          const decision = preApproved
-            ? true
-            : await gate.request({
-                approval,
-                requestId: call.id,
-                fallback: async () => approved.has(call.id),
-              });
+          // The gate is ALWAYS consulted for a destructive tool. It is
+          // the only component that knows which approvals were actually
+          // issued and what action they referred to.
+          //
+          // The agent deliberately does *not* honour a raw call id on
+          // its own: the id in a tool call comes from the model, not
+          // from the server, so an id a client invented (or a stale one)
+          // must not be able to authorise an arbitrary destructive call.
+          //
+          // The `approvedCallIds` are therefore only *candidates*: the
+          // gate resolves them against the approvals it was given, which
+          // come from the server-side registry.
+          const decision = await gate.request({
+            approval,
+            requestId: call.id,
+            fallback: async () => approved.has(call.id),
+          });
 
           if (!decision) {
             // The gate could not obtain a decision. If the gate says the
@@ -241,6 +249,17 @@ export class Agent {
             // Otherwise this is a refusal, and the run continues without
             // the tool.
             if (isDeferrable(gate) && gate.isPending(call.id)) {
+              // Record the decision before parking: the audit trail must
+              // show that this call was *not* authorised, and the UI
+              // needs to know an approval was asked for and withheld.
+              events.push({
+                type: 'approval_decision',
+                callId: call.id,
+                name: call.name,
+                approved: false,
+                source,
+              });
+
               const confirmation: PendingCall = {
                 callId: call.id,
                 name: call.name,

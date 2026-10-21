@@ -79,7 +79,7 @@ describe('HTTP approval binds to the parked action, not just the tool name', () 
     const first = await agent.run({
       history: [],
       userMessage: 'create a branch called feature/approved',
-      approvalGate: new HttpApprovalGate([], []),
+      approvalGate: new HttpApprovalGate(),
     });
 
     expect(first.awaitingConfirmation).toBe(true);
@@ -96,14 +96,21 @@ describe('HTTP approval binds to the parked action, not just the tool name', () 
     // Turn 2: the user approves the parked call. The model asks for a
     // DIFFERENT branch this time.
     const approvedCallIds = [first.pendingCall!.callId];
-    const approvedToolNames = approvedCallIds
-      .map((id) => pending.get(id)?.toolName)
-      .filter((name): name is string => Boolean(name));
+    // The approval is bound to the *parked action* — the tool and the
+    // arguments the user actually saw — not to the tool name alone.
+    const approvedActions = approvedCallIds
+      .map((id) => pending.get(id))
+      .filter((parked): parked is NonNullable<typeof parked> => Boolean(parked))
+      .map((parked) => ({
+        callId: parked.callId,
+        toolName: parked.toolName,
+        arguments: parked.arguments,
+      }));
 
     const second = await agent.run({
       history: [],
       userMessage: 'yes, go ahead',
-      approvalGate: new HttpApprovalGate(approvedCallIds, approvedToolNames),
+      approvalGate: new HttpApprovalGate(approvedActions),
       approvedCallIds,
     });
 
@@ -145,7 +152,7 @@ describe('HTTP approval binds to the parked action, not just the tool name', () 
     const first = await agent.run({
       history: [],
       userMessage: 'create a branch called feature/approved',
-      approvalGate: new HttpApprovalGate([], []),
+      approvalGate: new HttpApprovalGate(),
     });
 
     expect(first.awaitingConfirmation).toBe(true);
@@ -158,14 +165,21 @@ describe('HTTP approval binds to the parked action, not just the tool name', () 
     });
 
     const approvedCallIds = [first.pendingCall!.callId];
-    const approvedToolNames = approvedCallIds
-      .map((id) => pending.get(id)?.toolName)
-      .filter((name): name is string => Boolean(name));
+    // The approval is bound to the *parked action* — the tool and the
+    // arguments the user actually saw — not to the tool name alone.
+    const approvedActions = approvedCallIds
+      .map((id) => pending.get(id))
+      .filter((parked): parked is NonNullable<typeof parked> => Boolean(parked))
+      .map((parked) => ({
+        callId: parked.callId,
+        toolName: parked.toolName,
+        arguments: parked.arguments,
+      }));
 
     const second = await agent.run({
       history: [],
       userMessage: 'yes, go ahead',
-      approvalGate: new HttpApprovalGate(approvedCallIds, approvedToolNames),
+      approvalGate: new HttpApprovalGate(approvedActions),
       approvedCallIds,
     });
 

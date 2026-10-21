@@ -22,6 +22,114 @@ export interface ApprovalRequest {
 }
 
 /**
+ * A specific, user-visible action: a tool plus the exact arguments it
+ * would run with.
+ *
+ * An approval is a statement about *an action*, not about *a tool*. The
+ * user saw `create_branch(name="feature/approved")` on screen and clicked
+ * *Approve*; that authorises exactly that call and nothing else. A later
+ * `create_branch(name="something-else")` is a different action and needs a
+ * fresh approval.
+ */
+export interface ApprovedAction {
+  /**
+   * The call id the action was parked under.
+   *
+   * It records *which* parked call the approval came from, so the audit
+   * trail can point back at the exact thing the user saw. It is
+   * deliberately **not** what authorises a call: the id in a tool call
+   * comes from the model, and the model may reuse one, so matching on the
+   * id alone would let a different action run under an approved id.
+   */
+  callId: string;
+  toolName: string;
+  /**
+   * The arguments of the action, exactly as the user saw them.
+   *
+   * They may be raw (as the model produced them) or parsed (after Zod
+   * defaults are applied). The gate normalises both sides before
+   * comparing, so the two forms of the same action match.
+   */
+  arguments: Record<string, unknown>;
+}
+
+/**
+ * Normalises a tool's arguments into a canonical, comparable form.
+ *
+ * The tool's Zod schema is applied so that defaults are resolved: a call
+ * that omits `baseBranch` and one that spells out `baseBranch: "main"` are
+ * the same action.
+ */
+export type ArgumentNormaliser = (
+  toolName: string,
+) => ((args: Record<string, unknown>) => Record<string, unknown>) | undefined;
+
+/**
+ * The authority on which call ids the server actually issued.
+ *
+ * The client sends back the call ids it approved, but the client is not
+ * trusted: it could send any string. The registry is what the server
+ * issued, so it is what decides whether an id is real.
+ *
+ * A minimal implementation is a `Set` of issued ids.
+ */
+export interface IssuedCallIds {
+  has(callId: string): boolean;
+}
+
+/**
+ * Compares two argument objects for **semantic** equality.
+ *
+ * Key order does not matter, and JSON-equivalent values compare equal. But
+ * a different value never matches — which is the whole point: an approval
+ * must not carry over to a different action.
+ *
+ * The comparison is deliberately strict about *types*: `"1"` and `1` are
+ * different arguments, because they may mean different things to the tool.
+ */
+export function argumentsMatch(
+  a: Record<string, unknown>,
+  b: Record<string, unknown>,
+): boolean {
+  return canonicalize(a) === canonicalize(b);
+}
+
+/**
+ * Renders an argument object as a canonical string.
+ *
+ * Keys are sorted, so `{a:1,b:2}` and `{b:2,a:1}` produce the same string.
+ * Values are rendered by type, so a string never equals a number.
+ */
+function canonicalize(value: unknown): string {
+  if (value === null) return 'null';
+  if (value === undefined) return 'undefined';
+
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalize(item)).join(',')}]`;
+  }
+
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined)
+      .sort(([keyA], [keyB]) => (keyA < keyB ? -1 : keyA > keyB ? 1 : 0));
+    return `{${entries
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalize(item)}`)
+      .join(',')}}`;
+  }
+
+  if (typeof value === 'number') {
+    // `NaN` and `Infinity` are not JSON, so they cannot come from a
+    // parsed tool call, but they must not compare equal to anything.
+    return Number.isFinite(value) ? `n:${value}` : `n:${String(value)}`;
+  }
+
+  if (typeof value === 'string') return `s:${value}`;
+  if (typeof value === 'boolean') return `b:${value}`;
+
+  return `x:${String(value)}`;
+}
+
+/**
  * The outcome of asking for approval.
  *
  * `pending` means "nobody has decided yet" — the run is parked and the
@@ -104,35 +212,53 @@ export const noopApprovalAudit: ApprovalAudit = {
  * approved call ids with the next `/api/v1/chat` request. This gate turns
  * that list into a yes/no answer for one specific call.
  *
- * A call id can be approved in two ways:
+ * An approved call id can authorise a call in two ways:
  *
- *   - by **exact call id** — the id the server handed out in `pendingCall`;
- *   - by **tool name** — the server remembers which tool a parked call id
- *     referred to, so the approval still lands when the model asks for the
- *     same tool again with a fresh call id.
+ *   - by **exact call id** — the id the server handed out in `pendingCall`.
+ *     The model usually produces a fresh id, so this rarely fires.
+ *   - by **matching the parked action** — the same tool *and* the same
+ *     arguments as the parked call. This is the path the web client
+ *     actually exercises, because the model re-asks with a new id.
  *
- * When the call is not approved, nobody has decided yet: the gate
- * *defers*, and the run parks with a `pendingCall` for the UI.
+ * The second path is what makes an approval a statement about an *action*
+ * rather than a licence to invoke a *tool*. If the model asks for
+ * `create_branch(name="other")` after the user approved
+ * `create_branch(name="feature/approved")`, the arguments do not match and
+ * the call is **not** approved.
+ *
+ * Every approval is **consumed** by the first call it authorises, so one
+ * approval can never authorise two different actions.
  */
 export class HttpApprovalGate implements DeferrableApprovalGate {
   readonly source: ApprovalSource = 'http';
 
-  /** The call ids that were approved outright. */
-  private readonly approvedCallIds: ReadonlySet<string>;
-  /** The tool names that were approved. Consumed once each. */
-  private readonly approvedToolNames: Set<string>;
+  /**
+   * The parked actions that were approved. Consumed one each.
+   *
+   * These come from the `PendingApprovalRegistry`, which is the authority
+   * on which call ids the server actually issued. A client cannot invent
+   * an approval by sending an arbitrary id.
+   */
+  private readonly approvedActions: ApprovedAction[];
   /** The requests that are still waiting for a decision. */
   private readonly pending = new Set<string>();
+  /**
+   * Resolves a tool's canonical arguments.
+   *
+   * Optional: without it the arguments are compared as they are. With it,
+   * Zod defaults are applied on both sides, so a call that omits a
+   * defaulted field and one that spells it out are the same action.
+   */
+  private readonly normalise: ArgumentNormaliser | undefined;
 
   constructor(
-    approvedCallIds: Iterable<string> = [],
-    approvedToolNames: Iterable<string> = [],
+    approvedActions: Iterable<ApprovedAction> = [],
     private readonly audit: ApprovalAudit = noopApprovalAudit,
+    normalise?: ArgumentNormaliser,
   ) {
-    this.approvedCallIds = new Set(approvedCallIds);
-    this.approvedToolNames = new Set(approvedToolNames);
+    this.approvedActions = [...approvedActions];
+    this.normalise = normalise;
   }
-
   async request(input: {
     approval: ApprovalRequest;
     requestId: string;
@@ -140,16 +266,28 @@ export class HttpApprovalGate implements DeferrableApprovalGate {
   }): Promise<boolean> {
     const { approval, requestId } = input;
 
-    let approved = this.approvedCallIds.has(requestId);
+    // An approved *action* authorises a call that makes exactly the same
+    // action. The approval is consumed, so it cannot be replayed.
+    //
+    // The action must match on **both** the tool and the arguments.
+    //
+    // The parked call id is *not* sufficient on its own. The id in a
+    // tool call comes from the model, and the model is free to reuse an
+    // id it used before — including the id of a call the user approved.
+    // Matching on the id alone would let the model run a *different*
+    // action under an approved id, which is exactly the bug this
+    // replaces. The id only ever narrows *which* approval is considered;
+    // the arguments decide.
+    const index = this.approvedActions.findIndex((action) => {
+      if (action.toolName !== approval.toolName) return false;
+      return argumentsMatch(
+        this.canonical(action.toolName, action.arguments),
+        this.canonical(approval.toolName, approval.arguments),
+      );
+    });
 
-    // A tool-name approval is consumed by the first matching call, so one
-    // approval can never authorise two different actions.
-    if (!approved && this.approvedToolNames.has(approval.toolName)) {
-      this.approvedToolNames.delete(approval.toolName);
-      approved = true;
-    }
-
-    if (approved) {
+    if (index !== -1) {
+      this.approvedActions.splice(index, 1);
       this.pending.delete(requestId);
       this.audit.record({
         requestId,
@@ -171,10 +309,31 @@ export class HttpApprovalGate implements DeferrableApprovalGate {
     });
     return false;
   }
-
   /** The decision is outstanding when the call was not approved. */
   isPending(requestId: string): boolean {
     return this.pending.has(requestId);
+  }
+
+  /**
+   * Resolves a tool's arguments to their canonical form.
+   *
+   * The tool's Zod schema is applied when one is available, so Zod
+   * defaults are resolved. A call that omits `baseBranch` and a parked
+   * call that spelled out `baseBranch: "main"` are then the same action.
+   */
+  private canonical(
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const normalise = this.normalise?.(toolName);
+    if (!normalise) return args;
+    try {
+      return normalise(args);
+    } catch {
+      // If the arguments cannot be parsed they cannot match anything
+      // either; fall back to the raw values.
+      return args;
+    }
   }
 }
 
@@ -293,8 +452,11 @@ export class ElicitationApprovalGate implements ApprovalGate {
         at: new Date().toISOString(),
       });
 
-      // The client could not be asked. Fall back to the HTTP path.
+      // The client could not be asked. Fall back to the caller's path.
+      // In the MCP flow that path has no HTTP approvals, so the fallback
+      // refuses and the tool does not run.
       const allowed = await input.fallback();
+
       this.audit.record({
         requestId,
         toolName: approval.toolName,

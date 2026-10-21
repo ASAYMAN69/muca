@@ -10,6 +10,7 @@ import type {
 } from '../src/ai/provider.js';
 import { ToolRegistry } from '../src/tools/registry.js';
 import { createTools } from '../src/tools/index.js';
+import { HttpApprovalGate } from '../src/ai/approval-gate.js';
 
 /**
  * A scripted provider. Each entry is the response returned for one
@@ -164,7 +165,7 @@ describe('Agent tool-calling loop', () => {
   });
 
   it('executes a destructive tool once the call id is approved', async () => {
-    const { agent } = makeAgent([
+    const { provider, registry } = makeAgent([
       withToolCalls(
         null,
         [
@@ -176,6 +177,23 @@ describe('Agent tool-calling loop', () => {
       ),
       text('Created.'),
     ]);
+
+    // The approval is an *action* — the tool and its arguments — not a
+    // bare call id. The gate is the authority on what was approved.
+    const gate = new HttpApprovalGate([
+      {
+        callId: 'call_branch',
+        toolName: 'create_branch',
+        arguments: { name: 'fix/checkout-rounding', baseBranch: 'main' },
+      },
+    ]);
+
+    const agent = new Agent({
+      provider,
+      registry,
+      systemPrompt: 'You are Muca.',
+      approvalGate: gate,
+    });
 
     const result = await agent.run({
       history: [],

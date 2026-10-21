@@ -72,8 +72,17 @@ describe('MCP Elicitation over a real client', () => {
     client: Client;
     transport: StreamableHTTPClientTransport;
     elicitations: string[];
+    /** The full elicitation requests, so the arguments can be asserted. */
+    requests: Array<{
+      message: string;
+      requestedSchema: unknown;
+    }>;
   }> {
     const elicitations: string[] = [];
+    const requests: Array<{
+      message: string;
+      requestedSchema: unknown;
+    }> = [];
 
     const client = new Client(
       { name: 'muca-elicitation-test-client', version: '0.1.0' },
@@ -82,12 +91,22 @@ describe('MCP Elicitation over a real client', () => {
 
     client.setRequestHandler(ElicitRequestSchema, async (request) => {
       elicitations.push(request.params.message);
+      // The params are a union (form or URL); Muca only ever sends the
+      // form variant.
+      const params = request.params as {
+        message: string;
+        requestedSchema?: unknown;
+      };
+      requests.push({
+        message: params.message,
+        requestedSchema: params.requestedSchema,
+      });
       return answer(request.params.message);
     });
 
     const transport = new StreamableHTTPClientTransport(new URL(baseUrl));
     await client.connect(transport);
-    return { client, transport, elicitations };
+    return { client, transport, elicitations, requests };
   }
 
   /**
@@ -273,6 +292,50 @@ describe('MCP Elicitation over a real client', () => {
     expect(result.isError).toBeFalsy();
     // No elicitation was needed.
     expect(elicitations).toHaveLength(0);
+
+    await client.close();
+  });
+
+  /**
+   * The elicitation must show the user the *actual* action, not just the
+   * tool name. The client can only approve what it can see, so the
+   * arguments of the call being approved have to travel with the
+   * request.
+   */
+  it('sends the actual tool arguments in the elicitation request', async () => {
+    const { client, transport, requests } = await connect(() => ({
+      action: 'accept',
+      content: { confirm: true },
+    }));
+
+    await waitForSseStream(transport);
+
+    await client.callTool({
+      name: 'create_branch',
+      arguments: { name: 'fix/the-exact-branch', baseBranch: 'release' },
+    });
+
+    expect(requests).toHaveLength(1);
+    const request = requests[0]!;
+
+    // The message names the action and spells out its arguments, so the
+    // user can see exactly what would run.
+    expect(request.message).toContain('Create branch');
+    expect(request.message).toContain('fix/the-exact-branch');
+    expect(request.message).toContain('release');
+
+    // And the arguments are machine-readable in the requested schema.
+    const schema = request.requestedSchema as {
+      type?: string;
+      properties?: Record<string, { title?: string; description?: string }>;
+      required?: string[];
+    };
+    expect(schema.type).toBe('object');
+    expect(schema.required).toContain('confirm');
+    // The confirm prompt is titled after the action.
+    const confirm = schema.properties?.confirm;
+    expect(confirm?.title).toContain('Create branch');
+    expect(confirm?.description).toContain('consequential action');
 
     await client.close();
   });
