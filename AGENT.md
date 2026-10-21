@@ -103,6 +103,43 @@ See `AGENTS/repo_agent_protocol.md` and `AGENTS/TESTER.md`.
 
 <projectInfo>
 
+- [2026-10-22T01:45:00+06:00] **The second key cannot back a server —
+  but it proved the Anthropic path and the fallback.**
+
+  The owner supplied an OpenCode key (`ANTHROPIC_ENDPOINT=https://opencode.ai/zen`,
+  model `big-pickle`). It is a **free-tier key locked to the OpenCode
+  client**: both the Anthropic-style (`POST /v1/messages`) and the
+  OpenAI-style (`POST /v1/chat/completions`) endpoints return
+  `403 {"type":"error","error":{"type":"FreeTierError","message":"OpenCode's
+  free tier can only be used from within OpenCode."}}` for an external
+  caller. Muca is a server, so it cannot use it. The key was removed from
+  the local `.env`; it was never in git or in any commit.
+
+  It was still worth having, because it produced a **live** test of the
+  Anthropic path and the priority logic:
+
+  ```
+  AI gateway  auto → gemini (gemini-2.5-flash-lite)  probes: anthropic invalid_key 2364ms · openai not_configured · gemini ok 6784ms
+  ```
+
+  — the Anthropic probe built a real Messages request, the endpoint
+  answered, the 403 was classified `invalid_key`, and the gateway fell
+  back to the working provider. That is the "one configured, one working"
+  case, proven against real endpoints.
+
+  The Anthropic adapter is now as verified as it can be without a key
+  from Anthropic itself: the request shape is asserted against
+  Anthropic's documented API in `tests/provider-adapters.test.ts`
+  (`POST {endpoint}/v1/messages`, `x-api-key`, `anthropic-version:
+  2023-06-01`, `max_tokens`, `system`, `tools[].input_schema`,
+  `tool_use`/`tool_result`), the response mapping is unit-tested, and the
+  schema sanitisation that unblocked Gemini is **central**, so Anthropic
+  receives the same clean schemas. The one remaining gap is a successful
+  completion against a real Anthropic endpoint.
+
+  **Final acceptance verification dispatched** to the TESTER, scoped to
+  the delta rather than a re-audit.
+
 - [2026-10-22T01:20:00+06:00] **All three TESTER findings fixed and
   verified live against the real provider. The tree is clean.**
 
