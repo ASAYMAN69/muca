@@ -31,3 +31,4 @@ The full protocol is in `AGENTS/repo_agent_protocol.md`.
 | Date | Task | Summary |
 |---|---|---|
 | 2026-10-21 | Chat transcript → timeline, artifact cards, live MCP session panel, demo mode | `summaries/2026-10-21-round-1-summary.md` |
+| 2026-10-21 | One row per tool call in the approval timeline + a frontend test suite (in flight) | — |
