@@ -95,7 +95,7 @@ describe('Agent tool-calling loop', () => {
     // The tool catalogue was offered to the model.
     const catalogue = provider.receivedTools[0].map((t) => t.name);
     expect(catalogue).toContain('echo');
-    expect(catalogue).toContain('create_note');
+    expect(catalogue).toContain('list_deployments');
 
     // The second round must include the tool result.
     const secondRound = provider.receivedMessages[1];
@@ -140,21 +140,22 @@ describe('Agent tool-calling loop', () => {
   it('pauses for confirmation on a destructive tool and does not run it', async () => {
     const { agent, provider } = makeAgent([
       withToolCalls(
-        'I will delete that note.',
-        [toolCall('call_del', 'delete_note', { id: 'note_1' })],
+        'I will create that branch.',
+        [
+          toolCall('call_branch', 'create_branch', {
+            name: 'fix/checkout-rounding',
+            baseBranch: 'main',
+          }),
+        ],
       ),
     ]);
 
-    // Seed a note so a successful delete would be visible.
-    const registry = new ToolRegistry().registerAll(createTools());
-    await registry.get('create_note')!.handler({ title: 'x', body: '', tags: [] });
-
-    const result = await agent.run({ history: [], userMessage: 'delete note 1' });
+    const result = await agent.run({ history: [], userMessage: 'create a branch' });
 
     expect(result.awaitingConfirmation).toBe(true);
     expect(result.pendingCall).not.toBeNull();
-    expect(result.pendingCall!.name).toBe('delete_note');
-    expect(result.pendingCall!.callId).toBe('call_del');
+    expect(result.pendingCall!.name).toBe('create_branch');
+    expect(result.pendingCall!.callId).toBe('call_branch');
 
     // The loop stopped before executing the tool.
     expect(provider.receivedMessages).toHaveLength(1);
@@ -164,21 +165,29 @@ describe('Agent tool-calling loop', () => {
 
   it('executes a destructive tool once the call id is approved', async () => {
     const { agent } = makeAgent([
-      withToolCalls(null, [toolCall('call_del', 'delete_note', { id: 'note_1' })]),
-      text('Deleted.'),
+      withToolCalls(
+        null,
+        [
+          toolCall('call_branch', 'create_branch', {
+            name: 'fix/checkout-rounding',
+            baseBranch: 'main',
+          }),
+        ],
+      ),
+      text('Created.'),
     ]);
 
     const result = await agent.run({
       history: [],
-      userMessage: 'delete note 1',
-      approvedCallIds: ['call_del'],
+      userMessage: 'create a branch',
+      approvedCallIds: ['call_branch'],
     });
 
     expect(result.awaitingConfirmation).toBe(false);
     const toolResult = result.events.find((e) => e.type === 'tool_result');
     expect(toolResult).toBeDefined();
     if (toolResult?.type === 'tool_result') {
-      expect(toolResult.result.summary).toContain('Deleted note');
+      expect(toolResult.result.summary).toContain('Created branch');
     }
   });
 

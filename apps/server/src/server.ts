@@ -1,16 +1,26 @@
 import express, { type Express } from 'express';
 import { createServer as createHttpServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { resolve } from 'node:path';
 
 import { loadConfig, type AppConfig } from './config.js';
-import { loadEnv, WEB_DIR } from './paths.js';
-import { API_PREFIX, createApiRouter } from './http/api.js';
+import { REPO_ROOT, WEB_DIR, APP_ROOT } from './paths.js';
+import { API_PREFIX, createApiRouter, type TaskSnapshotLike } from './http/api.js';
 import { McpHttpHandler } from './mcp/http-handler.js';
 import { ToolRegistry } from './tools/registry.js';
 import { createTools } from './tools/index.js';
+import { createMockOpsAdapters } from './tools/ops/mock.js';
+import type { OpsAdapters } from './tools/ops/types.js';
 import { OpenAIProvider } from './ai/openai-provider.js';
+import { BedrockProvider } from './ai/bedrock-provider.js';
 import type { AIProvider } from './ai/provider.js';
 import { SYSTEM_PROMPT } from './ai/prompt.js';
+import {
+  RunHistoryStore,
+  defaultRunHistoryDir,
+} from './store/run-history.js';
+import { PendingApprovalRegistry } from './store/pending-approvals.js';
+import { isTerminalStatus, type TaskStatus } from './mcp/tasks.js';
 
 export interface BuiltServer {
   app: Express;
@@ -18,6 +28,7 @@ export interface BuiltServer {
   config: AppConfig;
   registry: ToolRegistry;
   mcp: McpHttpHandler;
+  runHistory: RunHistoryStore;
   close: () => Promise<void>;
 }
 
@@ -32,16 +43,31 @@ export interface BuiltServer {
 export async function buildServer(): Promise<BuiltServer> {
   const config = loadConfig();
 
-  const registry = new ToolRegistry().registerAll(createTools());
-  const mcp = new McpHttpHandler(registry);
+  const adapters: OpsAdapters = createMockOpsAdapters();
+  const registry = new ToolRegistry().registerAll(createTools(adapters));
+  const mcp = new McpHttpHandler(registry, adapters);
 
   const provider: AIProvider | null = config.ai.enabled
-    ? new OpenAIProvider({
-        apiKey: config.ai.apiKey,
-        baseUrl: config.ai.baseUrl,
-        model: config.ai.model,
-      })
+    ? config.ai.provider === 'bedrock'
+      ? new BedrockProvider({
+          model: config.ai.bedrock.modelId,
+          region: config.ai.bedrock.region,
+        })
+      : new OpenAIProvider({
+          apiKey: config.ai.openai.apiKey,
+          baseUrl: config.ai.openai.baseUrl,
+          model: config.ai.openai.model,
+        })
     : null;
+
+  const runHistory = new RunHistoryStore(
+    config.runHistoryDir
+      ? resolve(REPO_ROOT, config.runHistoryDir)
+      : defaultRunHistoryDir(APP_ROOT),
+  );
+  runHistory.init();
+
+  const pendingApprovals = new PendingApprovalRegistry();
 
   const app = express();
 
@@ -81,6 +107,10 @@ export async function buildServer(): Promise<BuiltServer> {
       systemPrompt: SYSTEM_PROMPT,
       protocolVersion: config.mcp.protocolVersion,
       mcpUrl: config.mcp.publicUrl,
+      runHistory,
+      pendingApprovals,
+      getTask: readTask,
+      listTasks: listTasks,
     }),
   );
 
@@ -124,7 +154,52 @@ export async function buildServer(): Promise<BuiltServer> {
     await nextApp.close?.();
   };
 
-  return { app, httpServer, config, registry, mcp, close };
+  return { app, httpServer, config, registry, mcp, runHistory, close };
+
+  /* ------------------------------------------------------------------ */
+  /* Task helpers                                                       */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Reads a task from the shared task store and shapes it for the REST
+   * API.
+   */
+  async function readTask(taskId: string): Promise<TaskSnapshotLike | null> {
+    const task = await mcp.taskStore.getTask(taskId);
+    if (!task) return null;
+
+    const snapshot: TaskSnapshotLike = {
+      taskId: task.taskId,
+      status: task.status,
+      createdAt: task.createdAt,
+      lastUpdatedAt: task.lastUpdatedAt,
+      ...(task.statusMessage ? { statusMessage: task.statusMessage } : {}),
+    };
+
+    if (isTerminalStatus(task.status)) {
+      try {
+        const result = await mcp.taskStore.getTaskResult(taskId);
+        snapshot.result = result;
+      } catch {
+        // A task that failed may have no stored result.
+        snapshot.error = task.statusMessage ?? `Task ${task.status}.`;
+      }
+    }
+
+    return snapshot;
+  }
+
+  /** Lists the known tasks, newest first. */
+  async function listTasks(): Promise<TaskSnapshotLike[]> {
+    const { tasks } = await mcp.taskStore.listTasks();
+    return tasks.map((task) => ({
+      taskId: task.taskId,
+      status: task.status as TaskStatus,
+      createdAt: task.createdAt,
+      lastUpdatedAt: task.lastUpdatedAt,
+      ...(task.statusMessage ? { statusMessage: task.statusMessage } : {}),
+    }));
+  }
 }
 
 /** Starts the server. Used by `src/index.ts` and by the integration tests. */

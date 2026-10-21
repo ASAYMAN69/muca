@@ -1,0 +1,7 @@
+# Local run history and other runtime state.
+#
+# The run history is written to `<repo root>/.muca/runs` by default (see
+# `src/store/run-history.ts`). The repository root `.gitignore` is owned by
+# the coordinator, so this file covers the same path from this app's side
+# as a belt-and-braces measure: the runtime state must never be committed.
+.muca/

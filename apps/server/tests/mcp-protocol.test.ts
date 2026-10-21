@@ -8,6 +8,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { McpHttpHandler } from '../src/mcp/http-handler.js';
 import { ToolRegistry } from '../src/tools/registry.js';
 import { createTools } from '../src/tools/index.js';
+import { createMockOpsAdapters } from '../src/tools/ops/mock.js';
 
 /**
  * Reads and parses a JSON request body.
@@ -34,7 +35,7 @@ describe('MCP server over Streamable HTTP', () => {
 
   beforeAll(async () => {
     const registry = new ToolRegistry().registerAll(createTools());
-    handler = new McpHttpHandler(registry);
+    handler = new McpHttpHandler(registry, createMockOpsAdapters());
 
     httpServer = createServer((req, res) => {
       void (async () => {
@@ -87,8 +88,8 @@ describe('MCP server over Streamable HTTP', () => {
 
     const names = tools.map((t) => t.name);
     expect(names).toContain('echo');
-    expect(names).toContain('create_note');
-    expect(names).toContain('delete_note');
+    expect(names).toContain('list_deployments');
+    expect(names).toContain('create_branch');
 
     const echo = tools.find((t) => t.name === 'echo');
     expect(echo).toBeDefined();
@@ -110,9 +111,9 @@ describe('MCP server over Streamable HTTP', () => {
     const client = await connect();
     const { tools } = await client.listTools();
 
-    const deleteNote = tools.find((t) => t.name === 'delete_note');
-    expect(deleteNote?.annotations?.destructiveHint).toBe(true);
-    expect(deleteNote?.annotations?.readOnlyHint).toBe(false);
+    const createBranch = tools.find((t) => t.name === 'create_branch');
+    expect(createBranch?.annotations?.destructiveHint).toBe(true);
+    expect(createBranch?.annotations?.readOnlyHint).toBe(false);
 
     const echo = tools.find((t) => t.name === 'echo');
     expect(echo?.annotations?.destructiveHint).toBe(false);
@@ -174,12 +175,15 @@ describe('MCP server over Streamable HTTP', () => {
     const client = await connect();
 
     const created = await client.callTool({
-      name: 'create_note',
-      arguments: { title: 'Groceries', body: 'milk', tags: ['errands'] },
+      name: 'create_issue',
+      arguments: { title: 'Groceries', body: 'milk', labels: ['errands'] },
     });
     expect(created.isError).toBeFalsy();
 
-    const list = await client.callTool({ name: 'list_notes', arguments: {} });
+    const list = await client.callTool({
+      name: 'list_issues',
+      arguments: { state: 'open' },
+    });
     const text = (list.content as Array<{ type: string; text?: string }>).find(
       (c) => c.type === 'text',
     );

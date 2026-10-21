@@ -2,10 +2,13 @@ import { randomUUID } from 'node:crypto';
 
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { InMemoryTaskStore } from '@modelcontextprotocol/sdk/experimental/tasks/stores/in-memory.js';
 import type { Request, Response } from 'express';
 
 import { createMcpServer } from './server.js';
+import { TaskRunner } from './tasks.js';
 import { ToolRegistry } from '../tools/registry.js';
+import type { OpsAdapters } from '../tools/ops/types.js';
 
 /**
  * Sends a JSON-RPC error response.
@@ -56,8 +59,22 @@ function sendJsonRpcError(
 export class McpHttpHandler {
   /** sessionId -> transport */
   private readonly sessions = new Map<string, StreamableHTTPServerTransport>();
+  /** sessionId -> the MCP server instance for that session. */
+  private readonly servers = new Map<string, McpServerHandle>();
 
-  constructor(private readonly registry: ToolRegistry) {}
+  /**
+   * The task store is shared across sessions so the REST task endpoint can
+   * see the tasks an MCP client started.
+   */
+  readonly taskStore = new InMemoryTaskStore();
+
+  /** The background runner that drives long-running tasks. */
+  readonly taskRunner = new TaskRunner();
+
+  constructor(
+    private readonly registry: ToolRegistry,
+    private readonly adapters: OpsAdapters,
+  ) {}
 
   /** All currently open session ids. Used by the health endpoint + tests. */
   get activeSessionIds(): string[] {
@@ -112,23 +129,37 @@ export class McpHttpHandler {
       return;
     }
 
+    // A fresh MCP server per session. The elicitation gate is built from
+    // this instance, so an approval can never leak between sessions.
+    const { server } = createMcpServer({
+      registry: this.registry,
+      adapters: this.adapters,
+      taskRunner: this.taskRunner,
+      taskStore: this.taskStore,
+    });
+
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (id) => {
         this.sessions.set(id, transport);
+        // The session id only exists once the initialize request has
+        // been handled, so the server is registered here rather than
+        // before the connect.
+        this.servers.set(id, server.server);
       },
       onsessionclosed: (id) => {
         this.sessions.delete(id);
+        this.servers.delete(id);
       },
     });
 
     transport.onclose = () => {
       if (transport.sessionId) {
         this.sessions.delete(transport.sessionId);
+        this.servers.delete(transport.sessionId);
       }
     };
 
-    const server = createMcpServer(this.registry);
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
   }
@@ -173,15 +204,56 @@ export class McpHttpHandler {
     }
 
     this.sessions.delete(sessionId);
+    this.servers.delete(sessionId);
     void transport.close();
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
+  }
+
+  /**
+   * The MCP server instance for a session, if it is still open.
+   *
+   * This is how the approval gate reaches the *current* session's server
+   * without a global singleton: the caller passes the session id and gets
+   * that session's server, or nothing.
+   */
+  serverForSession(sessionId: string): McpServerHandle | undefined {
+    return this.servers.get(sessionId);
   }
 
   /** Closes every open session. Called on server shutdown. */
   async closeAll(): Promise<void> {
     const transports = [...this.sessions.values()];
     this.sessions.clear();
+    this.servers.clear();
+    this.taskRunner.cancelAll();
+    this.taskStore.cleanup();
     await Promise.all(transports.map((t) => t.close()));
   }
+}
+
+/**
+ * The per-session MCP server.
+ *
+ * The `McpServer` wrapper exposes the low-level `Server` on `.server`, and
+ * that is where `elicitInput` lives. Only that one method is needed by the
+ * approval gate.
+ */
+export interface McpServerHandle {
+  elicitInput(params: {
+    mode?: 'form';
+    message: string;
+    requestedSchema: {
+      type: 'object';
+      properties: {
+        [key: string]: {
+          type: 'boolean';
+          title?: string;
+          description?: string;
+          default?: boolean;
+        };
+      };
+      required?: string[];
+    };
+  }): Promise<unknown>;
 }

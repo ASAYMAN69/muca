@@ -30,6 +30,14 @@ export const REPO_ROOT = findRepoRoot();
 export const WEB_DIR = resolve(REPO_ROOT, 'apps/web');
 
 /**
+ * The root of this app (`apps/server`).
+ *
+ * Used for app-local runtime state, such as the run history, which must
+ * stay inside the app and out of version control.
+ */
+export const APP_ROOT = resolve(REPO_ROOT, 'apps/server');
+
+/**
  * Loads `.env` from the repository root, then from `apps/server/.env`.
  * Real environment variables always win over the file.
  */

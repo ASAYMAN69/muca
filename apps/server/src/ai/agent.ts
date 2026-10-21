@@ -13,6 +13,12 @@ import {
   type ProviderTool,
   type ProviderToolCall,
 } from './provider.js';
+import {
+  HttpApprovalGate,
+  isDeferrable,
+  type ApprovalGate,
+  type ApprovalRequest,
+} from './approval-gate.js';
 
 export const MAX_TOOL_ROUNDS = 8;
 
@@ -31,6 +37,13 @@ export type AgentEvent =
       name: string;
       arguments: Record<string, unknown>;
       message: string;
+    }
+  | {
+      type: 'approval_decision';
+      callId: string;
+      name: string;
+      approved: boolean;
+      source: 'elicitation' | 'http' | 'fallback';
     }
   | { type: 'error'; message: string };
 
@@ -57,6 +70,14 @@ export interface AgentOptions {
   registry: ToolRegistry;
   systemPrompt: string;
   maxRounds?: number;
+  /**
+   * The gate every destructive tool must pass.
+   *
+   * Defaults to the HTTP gate with nothing approved: a destructive call
+   * parks the run and waits for the user. A destructive tool never runs
+   * without a human decision.
+   */
+  approvalGate?: ApprovalGate;
 }
 
 /**
@@ -77,12 +98,14 @@ export class Agent {
   private readonly registry: ToolRegistry;
   private readonly systemPrompt: string;
   private readonly maxRounds: number;
+  private readonly approvalGate: ApprovalGate;
 
   constructor(options: AgentOptions) {
     this.provider = options.provider;
     this.registry = options.registry;
     this.systemPrompt = options.systemPrompt;
     this.maxRounds = options.maxRounds ?? MAX_TOOL_ROUNDS;
+    this.approvalGate = options.approvalGate ?? new HttpApprovalGate();
   }
 
   /** Tool catalogue in the provider-neutral shape. */
@@ -99,13 +122,20 @@ export class Agent {
    *
    * @param history  Prior conversation turns (user + assistant messages).
    * @param userMessage The new user request.
+   * @param approvalGate The gate a destructive tool must pass. Defaults to
+   *   the gate the agent was constructed with.
    * @param approvedCallIds Tool call ids the user has already approved.
+   *   These are honoured regardless of the gate — they are the HTTP
+   *   approval path, and they are also what the elicitation gate falls
+   *   back to when the client cannot be asked.
    */
   async run(input: {
     history: ProviderMessage[];
     userMessage: string;
+    approvalGate?: ApprovalGate;
     approvedCallIds?: string[];
   }): Promise<AgentRunResult> {
+    const gate = input.approvalGate ?? this.approvalGate;
     const approved = new Set(input.approvedCallIds ?? []);
     const events: AgentEvent[] = [];
 
@@ -182,26 +212,85 @@ export class Agent {
           arguments: parsed.args,
         });
 
-        if (tool.destructive && !approved.has(call.id)) {
-          const confirmation: PendingCall = {
-            callId: call.id,
-            name: call.name,
-            arguments: parsed.args,
+        if (tool.destructive) {
+          const approval: ApprovalRequest = {
+            toolName: tool.name,
+            title: tool.title,
             message: describeCall(tool.title, parsed.args),
+            arguments: parsed.args,
           };
+
+          const source = gate.source ?? 'fallback';
+
+          // A call id the user already approved is honoured directly. This
+          // is the HTTP approval path, and it is also the fallback the
+          // elicitation gate uses when the client cannot be asked.
+          const preApproved = approved.has(call.id);
+          const decision = preApproved
+            ? true
+            : await gate.request({
+                approval,
+                requestId: call.id,
+                fallback: async () => approved.has(call.id),
+              });
+
+          if (!decision) {
+            // The gate could not obtain a decision. If the gate says the
+            // decision is still outstanding (the plain-HTTP path), the run
+            // *parks*: it returns a pendingCall and the UI asks the user.
+            // Otherwise this is a refusal, and the run continues without
+            // the tool.
+            if (isDeferrable(gate) && gate.isPending(call.id)) {
+              const confirmation: PendingCall = {
+                callId: call.id,
+                name: call.name,
+                arguments: parsed.args,
+                message: approval.message,
+              };
+              events.push({
+                type: 'confirmation_required',
+                callId: call.id,
+                name: call.name,
+                arguments: parsed.args,
+                message: confirmation.message,
+              });
+              return {
+                text: response.content ?? '',
+                events,
+                awaitingConfirmation: true,
+                pendingCall: confirmation,
+              };
+            }
+
+            events.push({
+              type: 'approval_decision',
+              callId: call.id,
+              name: call.name,
+              approved: false,
+              source,
+            });
+
+            // The user said no. Tell the model, and move on — a refusal is
+            // a normal outcome, not an error.
+            const declined =
+              `The user declined to run ${tool.name}. Do not retry it; explain what you would have done instead.`;
+            messages.push({
+              role: 'tool',
+              toolCallId: call.id,
+              name: call.name,
+              content: declined,
+            });
+            events.push({ type: 'error', message: declined });
+            continue;
+          }
+
           events.push({
-            type: 'confirmation_required',
+            type: 'approval_decision',
             callId: call.id,
             name: call.name,
-            arguments: parsed.args,
-            message: confirmation.message,
+            approved: true,
+            source,
           });
-          return {
-            text: response.content ?? '',
-            events,
-            awaitingConfirmation: true,
-            pendingCall: confirmation,
-          };
         }
 
         const { result, error } = await this.executeTool(tool, parsed.args);

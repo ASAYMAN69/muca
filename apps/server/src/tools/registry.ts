@@ -24,10 +24,8 @@ export interface MucaTool {
    * enforced by `defineTool` in `tools/index.ts`; runtime safety is
    * enforced by `inputSchema.safeParse` at every call boundary.
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   handler: (args: any) => Promise<ToolResult> | ToolResult;
 }
-
 export interface ToolResult {
   /** Human/AI readable summary of what happened. */
   summary: string;

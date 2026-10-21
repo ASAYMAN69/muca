@@ -32,6 +32,38 @@ class EchoProvider implements AIProvider {
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/* Response shapes                                                            */
+/* -------------------------------------------------------------------------- */
+
+interface ToolSummary {
+  name: string;
+  destructive: boolean;
+  inputSchema?: unknown;
+}
+
+interface HealthBody {
+  status: string;
+  mcp: { protocolVersion: string };
+  ai: { enabled: boolean };
+  tools: ToolSummary[];
+}
+
+interface ToolsBody {
+  tools: ToolSummary[];
+}
+
+interface ChatBody {
+  text: string;
+  awaitingConfirmation: boolean;
+  events: Array<{ type: string }>;
+}
+
+interface ErrorBody {
+  error: string;
+  details?: unknown[];
+}
+
 describe('REST API', () => {
   let httpServer: Server;
   let baseUrl: string;
@@ -65,23 +97,23 @@ describe('REST API', () => {
     const response = await fetch(`${baseUrl}/health`);
     expect(response.status).toBe(200);
 
-    const body = await response.json();
+    const body = (await response.json()) as HealthBody;
     expect(body.status).toBe('ok');
     expect(body.mcp.protocolVersion).toBe('2025-11-25');
     expect(body.ai.enabled).toBe(true);
     expect(Array.isArray(body.tools)).toBe(true);
     expect(body.tools.length).toBeGreaterThan(0);
-    expect(body.tools.find((t: { name: string }) => t.name === 'delete_note').destructive).toBe(true);
+    expect(body.tools.find((t) => t.name === 'create_branch')?.destructive).toBe(true);
   });
 
   it('GET /tools returns the catalogue with input schemas', async () => {
     const response = await fetch(`${baseUrl}/tools`);
     expect(response.status).toBe(200);
 
-    const body = await response.json();
-    const echo = body.tools.find((t: { name: string }) => t.name === 'echo');
+    const body = (await response.json()) as ToolsBody;
+    const echo = body.tools.find((t) => t.name === 'echo');
     expect(echo).toBeDefined();
-    expect(echo.inputSchema).toBeDefined();
+    expect(echo?.inputSchema).toBeDefined();
   });
 
   it('POST /chat runs the agent and returns events', async () => {
@@ -92,10 +124,10 @@ describe('REST API', () => {
     });
 
     expect(response.status).toBe(200);
-    const body = await response.json();
+    const body = (await response.json()) as ChatBody;
     expect(body.text).toBe('The tool said: from tool');
     expect(body.awaitingConfirmation).toBe(false);
-    expect(body.events.some((e: { type: string }) => e.type === 'tool_result')).toBe(true);
+    expect(body.events.some((e) => e.type === 'tool_result')).toBe(true);
   });
 
   it('POST /chat rejects an empty message with 400', async () => {
@@ -106,7 +138,7 @@ describe('REST API', () => {
     });
 
     expect(response.status).toBe(400);
-    const body = await response.json();
+    const body = (await response.json()) as ErrorBody;
     expect(body.error).toBe('Invalid request body');
     expect(Array.isArray(body.details)).toBe(true);
   });
