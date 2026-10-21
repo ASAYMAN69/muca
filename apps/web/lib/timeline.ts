@@ -165,6 +165,11 @@ export function buildTimeline(input: {
           approval.status = 'success';
           approval.summary = 'Approved by you. The tool ran.';
           approvalSteps.delete(event.id);
+          // The call step itself is a different row: mark it done too.
+          if (call) {
+            call.status = 'success';
+            pendingCalls.delete(event.id);
+          }
         }
         break;
       }
@@ -227,6 +232,9 @@ export function buildTimeline(input: {
           call.callId = event.id;
           call.destructive = true;
           pendingCalls.delete(event.id);
+          // Keep the row reachable so the tool_result that follows can
+          // resolve it to `success` instead of leaving it on "running".
+          if (event.approved) approvalSteps.set(event.id, call);
           break;
         }
 
@@ -242,6 +250,7 @@ export function buildTimeline(input: {
           toolName: event.name,
         };
         steps.push(step);
+        if (event.approved) approvalSteps.set(event.id, step);
         break;
       }
 

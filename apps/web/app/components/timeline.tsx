@@ -18,7 +18,7 @@ const STEP_TONE: Record<
     label: 'pending',
   },
   running: {
-    dot: 'bg-amber-500 animate-pulse',
+    dot: 'bg-amber-500 motion-safe:animate-pulse',
     ring: 'ring-amber-200 dark:ring-amber-900',
     label: 'running',
   },
@@ -78,12 +78,12 @@ function ApprovalStep({
         </p>
 
         <div>
-          <h5
+          <h4
             id={argsId}
             className="text-[10px] font-semibold uppercase tracking-wider text-amber-700/80 dark:text-amber-300/80"
           >
             What will happen
-          </h5>
+          </h4>
           <dl
             aria-labelledby={argsId}
             className="mt-1.5 divide-y divide-amber-200/70 rounded-md border border-amber-200 bg-white/60 dark:divide-amber-800/60 dark:border-amber-800/60 dark:bg-neutral-950/25"
@@ -166,7 +166,7 @@ function Step({
 
       <div className="pb-5">
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-          <h4
+          <h3
             className={`text-[13px] font-semibold ${
               isApproval
                 ? 'text-amber-950 dark:text-amber-100'
@@ -174,7 +174,7 @@ function Step({
             }`}
           >
             {step.title}
-          </h4>
+          </h3>
           {step.toolName ? (
             <code className="rounded bg-neutral-100 px-1.5 py-px font-mono text-[11px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400">
               {step.toolName}
@@ -196,7 +196,9 @@ function Step({
           </p>
         ) : null}
 
-        {step.kind === 'tool_call' && step.arguments && step.arguments.length > 0 ? (
+        {step.arguments && step.arguments.length > 0 &&
+        (step.kind === 'tool_call' ||
+          (step.kind === 'approval' && step.status !== 'blocked')) ? (
           <ArgumentList step={step} />
         ) : null}
         {/* When an artifact card covers the result, the raw summary would

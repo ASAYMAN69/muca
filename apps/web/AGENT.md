@@ -6,21 +6,21 @@
 - You are **not a subagent**. Do not use `sub-agent/` directories, per-agent
   markers, or cross-session message files.
 - The user talks to the **system coordinator** (the HEAD agent). The
-  coordinator writes `AGENT/TASK.md`; the user tells you to read it.
+  coordinator writes `AGENTS/FRONTEND/TASK.md`; the user tells you to read it.
 - Never edit `apps/server` or the workspace root. If a task needs the other
-  app, **stop** and report it in `AGENT/SUMMARY.md`; the coordinator will
+  app, **stop** and report it in `AGENTS/FRONTEND/SUMMARY.md`; the coordinator will
   create a counterpart task.
 
 ## 1. Session start checklist
 
 1. If this is a fresh session, read `AGENT.md` (this file). Your context
    persists between tasks, so you normally do not need to re-read it.
-2. Check `AGENT/TASK.md` and `AGENT/TASK-COMPLETE.md`:
+2. Check `AGENTS/FRONTEND/TASK.md` and `AGENTS/FRONTEND/TASK-COMPLETE.md`:
    - If `TASK-COMPLETE.md` exists and `TASK.md` does not, the previous task
      is still marked complete. **Stop** and tell the user the coordinator
      must reset it before you can work.
    - If neither exists, wait for the coordinator.
-3. Read `AGENT/TASK.md` and work only that task.
+3. Read `AGENTS/FRONTEND/TASK.md` and work only that task.
 4. Do not infer requirements from the user chat. The task file is the source
    of truth.
 
@@ -28,9 +28,9 @@
 
 1. Implement within the task's scope. Stay inside `apps/web`.
 2. Verify (see §5). Record exact commands and results.
-3. Overwrite `AGENT/SUMMARY.md` with the task summary (see §4).
-4. Rename `AGENT/TASK.md` → `AGENT/TASK-COMPLETE.md`.
-5. Tell the user the task is complete and point to `AGENT/SUMMARY.md`.
+3. Overwrite `AGENTS/FRONTEND/SUMMARY.md` with the task summary (see §4).
+4. Rename `AGENTS/FRONTEND/TASK.md` → `AGENTS/FRONTEND/TASK-COMPLETE.md`.
+5. Tell the user the task is complete and point to `AGENTS/FRONTEND/SUMMARY.md`.
 
 Do not rename `TASK-COMPLETE.md` back yourself; the coordinator resets it.
 

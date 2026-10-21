@@ -155,13 +155,7 @@ export function McpPanel({
 
   // Connect on mount so the panel is already live when a judge opens it.
   useEffect(() => {
-    const client = new McpBrowserClient((partial) => {
-      setSession((prev) => {
-        const next = { ...prev, ...partial };
-        onSessionChange?.(next);
-        return next;
-      });
-    });
+    const client = new McpBrowserClient(apply);
     clientRef.current = client;
     void client.connect();
 
@@ -169,7 +163,7 @@ export function McpPanel({
       void client.dispose();
       clientRef.current = null;
     };
-  }, [onSessionChange]);
+  }, [apply]);
 
   // Keep the log pinned to the newest entry.
   useEffect(() => {

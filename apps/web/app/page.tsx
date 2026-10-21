@@ -4,12 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   fetchHealth,
+  fetchTask,
   parseAgentEvents,
   sendChat,
   type AgentEvent,
   type ChatTurn,
   type HealthResponse,
   type PendingCall,
+  type TaskSnapshot,
 } from '../lib/api';
 import {
   buildArtifact,
@@ -23,8 +25,10 @@ import {
   DEMO_PENDING,
   DEMO_REQUEST,
 } from '../lib/demo';
+import type { McpSession } from '../lib/mcp';
 import { buildTimeline, type TimelineStep } from '../lib/timeline';
 import { McpPanel } from './components/mcp-panel';
+import { RunHistoryPanel } from './components/run-history';
 import { TimelineView } from './components/timeline';
 
 /* -------------------------------------------------------------------------- */
@@ -47,6 +51,10 @@ interface Run {
   text: string;
   /** The run id reported by the server. */
   runId?: string;
+  /** The long-running MCP task this run started, if any. */
+  taskId?: string;
+  /** The latest snapshot of that task. */
+  task?: TaskSnapshot | null;
   /** True for the scripted demo run. */
   demo?: boolean;
   /** True when the user declined the pending call. */
@@ -60,6 +68,13 @@ function nextRunId(): string {
   return `run-${runCounter}`;
 }
 
+/** The task statuses that mean the task will not change again. */
+const TERMINAL_TASK_STATUSES = ['completed', 'failed', 'cancelled'];
+
+function isTerminalTaskStatus(status: string | undefined): boolean {
+  return status !== undefined && TERMINAL_TASK_STATUSES.includes(status);
+}
+
 /* -------------------------------------------------------------------------- */
 /* The page                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -70,8 +85,11 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
+  const [mcpSession, setMcpSession] = useState<McpSession | null>(null);
   const [demoMode, setDemoMode] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Task ids whose route 404'd (or returned nothing): stop polling them. */
+  const unavailableTasks = useRef<Set<string>>(new Set());
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -89,6 +107,44 @@ export default function Home() {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [runs, busy]);
 
+  /**
+   * Poll a long-running MCP task.
+   *
+   * The backend returns a task handle for the diagnosis workflow. We
+   * poll it while it is not in a terminal state. The route is new, so a
+   * 404 simply stops the polling — it never blocks the UI.
+   */
+  useEffect(() => {
+    const active = runs.find(
+      (run) =>
+        run.taskId &&
+        !unavailableTasks.current.has(run.taskId) &&
+        !isTerminalTaskStatus(run.task?.status),
+    );
+    if (!active?.taskId) return;
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void fetchTask(active.taskId!).then((task) => {
+        if (cancelled) return;
+        if (!task) {
+          unavailableTasks.current.add(active.taskId!);
+          return;
+        }
+        setRuns((previous) =>
+          previous.map((run) =>
+            run.id === active.id ? { ...run, task } : run,
+          ),
+        );
+      });
+    }, 1500);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [runs]);
+
   const aiEnabled = health?.ai?.enabled === true;
 
   /** The tools the server marked destructive, for the timeline badges. */
@@ -97,8 +153,12 @@ export default function Home() {
     for (const tool of health?.tools ?? []) {
       if (tool?.destructive) names.add(tool.name);
     }
+    // The MCP catalogue is the source of truth; `/health` can lag behind it.
+    for (const tool of mcpSession?.tools ?? []) {
+      if (tool?.destructive) names.add(tool.name);
+    }
     return names;
-  }, [health]);
+  }, [health, mcpSession]);
 
   /** The conversation history the API expects. */
   const history = useCallback((): ChatTurn[] => {
@@ -141,6 +201,7 @@ export default function Home() {
                 pending,
                 awaitingConfirmation: pending !== null,
                 runId: response.runId ?? last.runId,
+                taskId: response.taskId ?? last.taskId,
                 declined: false,
               };
               return next;
@@ -158,6 +219,8 @@ export default function Home() {
               pending,
               awaitingConfirmation: pending !== null,
               runId: response.runId,
+              taskId: response.taskId,
+              task: null,
             },
           ];
         });
@@ -320,6 +383,13 @@ export default function Home() {
 
   const hasRuns = runs.length > 0;
 
+  // Prefer the catalogue the MCP session actually discovered over the
+  // snapshot in `/health`; the MCP panel is the source of truth.
+  const toolCount =
+    mcpSession?.status === 'connected'
+      ? mcpSession.tools.length
+      : health?.tools?.length;
+
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
       <div className="mx-auto flex min-h-screen max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6 lg:flex-row lg:gap-8 lg:py-10">
@@ -359,7 +429,7 @@ export default function Home() {
                     : 'AI not configured'}
                 </Chip>
                 <Chip tone="neutral">
-                  {health.tools?.length ?? 0} tools
+                  {toolCount ?? 0} tools
                 </Chip>
               </>
             ) : (
@@ -390,8 +460,11 @@ export default function Home() {
             <DemoBanner onStart={startDemo} busy={busy} />
           ) : null}
 
-          {/* Empty state */}
-          {!hasRuns ? (
+          {/* Empty state. When the AI provider is off, the demo banner above
+              already explains the situation and offers the demo; a second
+              card of prompts that can only replay that same demo would just
+              be noise. */}
+          {!hasRuns && (aiEnabled || !health) ? (
             <EmptyState
               aiEnabled={aiEnabled}
               onDemo={startDemo}
@@ -413,6 +486,8 @@ export default function Home() {
               ))}
             </div>
           ) : null}
+
+          <RunHistoryPanel />
 
           <div ref={endRef} />
 
@@ -453,7 +528,7 @@ export default function Home() {
         {/* ------------------------------------------------------------- */}
         <aside className="w-full shrink-0 lg:w-96">
           <div className="lg:sticky lg:top-6">
-            <McpPanel health={health} />
+            <McpPanel health={health} onSessionChange={setMcpSession} />
           </div>
         </aside>
       </div>
@@ -562,7 +637,36 @@ function RunView({
           You declined that action. Nothing was run.
         </p>
       ) : null}
+
+      {run.task ? <TaskStatus status={run.task} /> : null}
     </section>
+  );
+}
+
+/** The status of a long-running MCP task. */
+function TaskStatus({ status }: { status: TaskSnapshot }) {
+  const terminal = isTerminalTaskStatus(status.status);
+  const tone = terminal
+    ? status.status === 'failed'
+      ? 'border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200'
+      : 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200'
+    : 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200';
+
+  return (
+    <p
+      aria-live="polite"
+      className={`mt-3 rounded-lg border px-3.5 py-2.5 text-[12px] ${tone}`}
+    >
+      <span className="font-semibold uppercase tracking-wider">
+        Task {status.status ?? 'unknown'}
+      </span>
+      {status.statusMessage ? (
+        <span className="ml-2">{status.statusMessage}</span>
+      ) : null}
+      {status.taskId ? (
+        <code className="ml-2 font-mono text-[11px] opacity-80">{status.taskId}</code>
+      ) : null}
+    </p>
   );
 }
 
