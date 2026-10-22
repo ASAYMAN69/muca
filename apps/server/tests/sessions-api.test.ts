@@ -162,6 +162,43 @@ describe('the session and policy routes', () => {
     expect(body.session.archived).toBe(true);
   });
 
+  it('DELETE /sessions/:id removes the session and everything in it', async () => {
+    const created = await (
+      await fetch(`${baseUrl}/sessions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ title: 'Doomed' }),
+      })
+    ).json() as { session: { id: string } };
+    const id = created.session.id;
+
+    // Give it something to delete.
+    await fetch(`${baseUrl}/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'hello', sessionId: id }),
+    });
+
+    const deleted = await fetch(`${baseUrl}/sessions/${id}`, { method: 'DELETE' });
+    expect(deleted.status).toBe(204);
+
+    const gone = await fetch(`${baseUrl}/sessions/${id}`);
+    expect(gone.status).toBe(404);
+
+    // The rows are gone too, not just the session.
+    expect(store.sessions.get(id)).toBeNull();
+    expect(store.messages.list(id)).toHaveLength(0);
+    expect(store.runs.listForSession(id)).toHaveLength(0);
+    expect(store.events.readFrom(id, 0)).toHaveLength(0);
+  });
+
+  it('DELETE /sessions/:id is 404 for an unknown session', async () => {
+    const response = await fetch(`${baseUrl}/sessions/ses_nope`, {
+      method: 'DELETE',
+    });
+    expect(response.status).toBe(404);
+  });
+
   it('GET /sessions/:id/events replays the event log', async () => {
     const created = await (
       await fetch(`${baseUrl}/sessions`, {

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { Server as HttpServer } from 'node:http';
 
 import type { ContextLimit } from '../ai/context-limits.js';
@@ -106,6 +107,12 @@ export class LiveService {
     // The session must exist before anything is written to it.
     this.options.store.sessions.create({ id: input.sessionId });
 
+    // The run gets its id here, not inside the run, because every frame
+    // it publishes has to carry it. A frame without a run id cannot be
+    // placed in a client's timeline, so the client would show the same
+    // request once per frame instead of once per run.
+    const runId = `run_${randomUUID()}`;
+
     const runOptions: LiveRunOptions = {
       sessionId: input.sessionId,
       message: input.message,
@@ -116,7 +123,9 @@ export class LiveService {
       policyEngine: this.policyEngine,
       store: this.options.store,
       model: this.options.model ?? null,
-      publish: (type, data) => this.hub.publish(input.sessionId, type, data),
+      runId,
+      publish: (type, data) =>
+        this.hub.publish(input.sessionId, type, data, runId),
       contextLimit: this.options.contextLimit,
       countTokens: this.options.countTokens,
       compactionThreshold: this.options.compactionThreshold,

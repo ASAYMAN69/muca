@@ -91,6 +91,31 @@ export class SessionStore {
     return this.get(id);
   }
 
+  /**
+   * Deletes a session and everything it holds.
+   *
+   * There are no foreign keys in this schema, so the children are deleted
+   * explicitly, in one transaction: a half-deleted session would leave
+   * runs and events pointing at an id that no longer exists.
+   */
+  delete(id: string): boolean {
+    if (!this.get(id)) return false;
+
+    return transaction(this.db, () => {
+      for (const table of [
+        'messages',
+        'events',
+        'runs',
+        'approvals',
+        'requests',
+      ]) {
+        this.db.prepare(`DELETE FROM ${table} WHERE session_id = ?`).run(id);
+      }
+      this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
+      return true;
+    });
+  }
+
   /** Marks a session as touched, so it sorts to the top of the sidebar. */
   touch(id: string): void {
     this.db

@@ -197,6 +197,16 @@ export async function buildServer(): Promise<BuiltServer> {
     void handle(req, res);
   });
 
+  // In development the first request compiles the page, which takes
+  // about ten seconds. The server asks for it now, in the background,
+  // so the first person to open the browser does not pay for it.
+  if (config.nodeEnv !== 'production') {
+    const warm = setTimeout(() => {
+      void fetch(`http://127.0.0.1:${config.port}/`).catch(() => undefined);
+    }, 250);
+    warm.unref?.();
+  }
+
   const httpServer = createHttpServer(app);
 
   // The socket is on the **same** server, on the **same** port. There is

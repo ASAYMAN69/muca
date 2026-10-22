@@ -98,6 +98,34 @@ export function createSessionsRouter(deps: {
   });
 
   /**
+   * Deletes a session and everything it holds.
+   *
+   * A run that is still going is refused: deleting its rows underneath it
+   * would leave the live session writing to a session that is gone.
+   */
+  router.delete('/sessions/:id', (req: Request, res: Response) => {
+    const sessionId = String(req.params.id);
+
+    if (!deps.store.sessions.get(sessionId)) {
+      res.status(404).json({ error: `No session with id ${sessionId}.` });
+      return;
+    }
+
+    const running = deps.store.runs
+      .listForSession(sessionId, 5)
+      .some((run) => run.finishedAt === null);
+    if (running) {
+      res.status(409).json({
+        error: 'The session has a run in progress. Wait for it to finish, then delete it.',
+      });
+      return;
+    }
+
+    deps.store.sessions.delete(sessionId);
+    res.status(204).end();
+  });
+
+  /**
    * The event log of a session.
    *
    * It is the same log the socket replays from, so a client that has

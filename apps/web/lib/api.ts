@@ -523,6 +523,19 @@ export async function updateSession(
   }
 }
 
+/** Deletes a session and everything it holds. */
+export async function deleteSession(sessionId: string): Promise<boolean> {
+  try {
+    const response = await fetch(
+      `${API_BASE}/sessions/${encodeURIComponent(sessionId)}`,
+      { method: 'DELETE' },
+    );
+    return response.status === 204;
+  } catch {
+    return false;
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* Policies                                                                    */
 /* -------------------------------------------------------------------------- */

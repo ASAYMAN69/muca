@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import type { SessionSummary } from '../../lib/api';
 import { relativeTime } from '../../lib/format';
@@ -29,6 +29,8 @@ export function SessionSidebar({
   onDemo,
   onOpenPolicies,
   onOpenHelp,
+  onRename,
+  onDelete,
   liveStatus,
   open,
   onClose,
@@ -41,12 +43,36 @@ export function SessionSidebar({
   onDemo: () => void;
   onOpenPolicies: () => void;
   onOpenHelp: () => void;
+  onRename: (sessionId: string, title: string) => void;
+  onDelete: (sessionId: string) => void;
   liveStatus: LiveStatus;
   open: boolean;
   onClose: () => void;
   sessionsAvailable: boolean;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
+
+  /* The session being renamed, and the one being deleted. */
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+
+  const startRename = (session: SessionSummary) => {
+    setConfirmId(null);
+    setRenamingId(session.id);
+    setDraft(session.title || '');
+  };
+
+  const cancelRename = () => {
+    setRenamingId(null);
+    setDraft('');
+  };
+
+  const commitRename = () => {
+    const title = draft.trim();
+    if (renamingId && title) onRename(renamingId, title);
+    cancelRename();
+  };
 
   // While the sheet is open, the page behind it should not scroll and the
   // focus should stay inside.
@@ -132,39 +158,115 @@ export function SessionSidebar({
               {sessions.map((session) => {
                 const active = session.id === currentId;
                 const waiting = session.waiting === true;
+                const renaming = renamingId === session.id;
+                const confirming = confirmId === session.id;
                 return (
-                  <li key={session.id}>
-                    <button
-                      type="button"
-                      aria-current={active ? 'page' : undefined}
-                      onClick={() => onSelect(session.id)}
-                      className={`w-full rounded-lg px-2.5 py-2 text-left transition-[background-color,transform] duration-150 ease-out active:scale-[0.99] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
-                        active
-                          ? 'bg-surface-hover text-ink'
-                          : 'text-ink-muted hover:bg-surface-hover/60 hover:text-ink'
-                      }`}
-                    >
-                      <span className="flex items-center gap-2">
-                        <span className="min-w-0 flex-1 truncate text-[13px]">
-                          {session.title || 'Untitled session'}
-                        </span>
-                        {waiting ? (
-                          <span
-                            title="The agent is waiting for you"
-                            className="flex shrink-0 items-center gap-1 rounded-full bg-warn-soft px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-warn"
-                          >
-                            <span
-                              aria-hidden="true"
-                              className="size-1.5 rounded-full bg-warn motion-safe:animate-pulse"
-                            />
-                            needs you
+                  <li key={session.id} className="group relative">
+                    {renaming ? (
+                      <form
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          commitRename();
+                        }}
+                        className="px-1 py-1"
+                      >
+                        <input
+                          autoFocus
+                          value={draft}
+                          aria-label="Session name"
+                          placeholder="Name this session"
+                          onChange={(event) => setDraft(event.target.value)}
+                          onBlur={commitRename}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Escape') cancelRename();
+                          }}
+                          className="w-full rounded-md border border-line bg-surface px-2 py-1 text-[13px] text-ink outline-none focus:border-accent"
+                        />
+                      </form>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          aria-current={active ? 'page' : undefined}
+                          onClick={() => onSelect(session.id)}
+                          className={`w-full rounded-lg px-2.5 py-2 pr-16 text-left transition-[background-color,transform] duration-150 ease-out active:scale-[0.99] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
+                            active
+                              ? 'bg-surface-hover text-ink'
+                              : 'text-ink-muted hover:bg-surface-hover/60 hover:text-ink'
+                          }`}
+                        >
+                          <span className="flex items-center gap-2">
+                            <span className="min-w-0 flex-1 truncate text-[13px]">
+                              {session.title || 'Untitled session'}
+                            </span>
+                            {waiting ? (
+                              <span
+                                title="The agent is waiting for you"
+                                className="flex shrink-0 items-center gap-1 rounded-full bg-warn-soft px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-warn"
+                              >
+                                <span
+                                  aria-hidden="true"
+                                  className="size-1.5 rounded-full bg-warn motion-safe:animate-pulse"
+                                />
+                                needs you
+                              </span>
+                            ) : null}
                           </span>
-                        ) : null}
-                      </span>
-                      <span className="mt-0.5 block text-[11px] text-ink-faint">
-                        {relativeTime(session.updatedAt ?? session.createdAt)}
-                      </span>
-                    </button>
+                          <span className="mt-0.5 block text-[11px] text-ink-faint">
+                            {relativeTime(session.updatedAt ?? session.createdAt)}
+                          </span>
+                        </button>
+
+                        {/* Rename and delete. Always visible on a narrow
+                            screen, on hover on a wide one. */}
+                        <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5 opacity-100 transition-opacity duration-150 md:opacity-0 md:group-focus-within:opacity-100 md:group-hover:opacity-100">
+                          {confirming ? (
+                            <>
+                              <button
+                                type="button"
+                                autoFocus
+                                onClick={() => {
+                                  setConfirmId(null);
+                                  onDelete(session.id);
+                                }}
+                                className="rounded-md bg-bad-soft px-1.5 py-0.5 text-[11px] font-semibold text-bad transition-colors duration-150 hover:bg-bad/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bad"
+                              >
+                                Delete?
+                              </button>
+                              <button
+                                type="button"
+                                aria-label="Keep the session"
+                                onClick={() => setConfirmId(null)}
+                                className="rounded-md p-1 text-[11px] text-ink-faint transition-colors duration-150 hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                              >
+                                <span aria-hidden="true">✕</span>
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                aria-label={`Rename ${session.title || 'this session'}`}
+                                title="Rename"
+                                onClick={() => startRename(session)}
+                                className="rounded-md p-1 text-[12px] text-ink-faint transition-colors duration-150 hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                              >
+                                <span aria-hidden="true">✎</span>
+                              </button>
+                              <button
+                                type="button"
+                                aria-label={`Delete ${session.title || 'this session'}`}
+                                title="Delete"
+                                onClick={() => setConfirmId(session.id)}
+                                className="rounded-md p-1 text-[12px] text-ink-faint transition-colors duration-150 hover:bg-surface-hover hover:text-bad focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-bad"
+                              >
+                                <span aria-hidden="true">🗑</span>
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </>
+                    )}
                   </li>
                 );
               })}

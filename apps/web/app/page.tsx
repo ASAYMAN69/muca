@@ -6,6 +6,7 @@ import {
   createPolicy,
   createSession,
   deletePolicy,
+  deleteSession,
   fetchHealth,
   fetchPolicies,
   fetchSession,
@@ -22,7 +23,9 @@ import {
   type Policy,
   type SessionSummary,
   type TaskSnapshot,
-  type ToolSummary, updateSession } from '../lib/api';
+  type ToolSummary,
+  updateSession,
+} from '../lib/api';
 import { buildArtifact, type Artifact } from '../lib/artifacts';
 import {
   DEMO_APPROVED_EVENTS,
@@ -269,25 +272,62 @@ export default function Home() {
     setRuns((previous) => {
       if (frame.type === 'run_started') {
         const data = (frame.data ?? {}) as { message?: string };
-        const runId = frame.runId ?? `live-${previous.length + 1}`;
-        const existing = previous.find((run) => run.runId === runId);
-        if (existing) return previous;
+        const runId = frame.runId;
+        // A frame with no run id cannot be placed. It used to invent one,
+        // which put a second copy of the same request in the timeline.
+        if (!runId) return previous;
+
+        const existingIndex = previous.findIndex((run) => run.runId === runId);
+        if (existingIndex !== -1) {
+          const next = [...previous];
+          const state = applyFrame(emptyRun(runId), frame);
+          const current = next[existingIndex];
+          next[existingIndex] = {
+            ...current,
+            events: current.events.length > 0 ? current.events : state.events,
+            pending: state.pending ?? current.pending,
+            awaitingConfirmation:
+              state.awaitingConfirmation || current.awaitingConfirmation,
+            text: state.text || current.text,
+            thinking: state.thinking || current.thinking,
+            thinkingActive: current.thinkingActive,
+          };
+          return next;
+        }
+
+        // The request was already shown the moment it was sent, as a
+        // local placeholder. This frame is the same run, so the
+        // placeholder becomes the run instead of joining it.
+        const message = (data.message ?? '').trim();
+        const placeholderIndex = previous.findIndex(
+          (run) =>
+            !run.runId &&
+            run.events.length === 0 &&
+            run.request.trim() === message,
+        );
+
         const state = applyFrame(emptyRun(runId), frame);
-        return [
-          ...previous,
-          {
-            id: runId,
-            request: data.message ?? '',
-            events: state.events,
-            pending: state.pending,
-            awaitingConfirmation: state.awaitingConfirmation,
-            text: state.text,
-            runId,
-            thinking: state.thinking,
-            thinkingActive: state.thinkingActive,
-            clarificationId: state.clarification?.id,
-          },
-        ];
+        const merged: Run = {
+          ...(placeholderIndex !== -1 ? previous[placeholderIndex] : null),
+          id: runId,
+          runId,
+          request:
+            placeholderIndex !== -1 && previous[placeholderIndex].request
+              ? previous[placeholderIndex].request
+              : message,
+          events: state.events,
+          pending: state.pending,
+          awaitingConfirmation: state.awaitingConfirmation,
+          text: state.text,
+          thinking: state.thinking,
+          thinkingActive: state.thinkingActive,
+          clarificationId: state.clarification?.id,
+        };
+
+        const next = [...previous];
+        if (placeholderIndex !== -1) next[placeholderIndex] = merged;
+        else next.push(merged);
+        return next;
       }
 
       const index = previous.findIndex(
@@ -397,6 +437,48 @@ export default function Home() {
     setView('timeline');
     setSidebarOpen(false);
   }, [setActiveSession]);
+
+  /** Renames a session, in the sidebar and in the store. */
+  const renameSession = useCallback((id: string, title: string) => {
+    void (async () => {
+      const updated = await updateSession(id, { title });
+      if (!updated) return;
+      setSessions((current) =>
+        current.map((session) =>
+          session.id === id
+            ? {
+                ...session,
+                title: updated.title ?? title,
+                updatedAt: updated.updatedAt ?? session.updatedAt,
+              }
+            : session,
+        ),
+      );
+    })();
+  }, []);
+
+  /**
+   * Deletes a session.
+   *
+   * Deleting the session you are looking at starts a fresh one, so the
+   * page is never left pointing at something that is gone.
+   */
+  const deleteSessionById = useCallback(
+    (id: string) => {
+      void (async () => {
+        const deleted = await deleteSession(id);
+        if (!deleted) return;
+        setSessions((current) => current.filter((session) => session.id !== id));
+        if (sessionIdRef.current === id) {
+          setRuns([]);
+          setView('timeline');
+          setActiveSession(null);
+          await newSession();
+        }
+      })();
+    },
+    [newSession, setActiveSession],
+  );
 
   /* ---------------------------------------------------------------------- */
   /* Running the agent                                                       */
@@ -847,6 +929,8 @@ export default function Home() {
           setHelpOpen(true);
           setSidebarOpen(false);
         }}
+        onRename={renameSession}
+        onDelete={deleteSessionById}
         liveStatus={liveStatus}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
