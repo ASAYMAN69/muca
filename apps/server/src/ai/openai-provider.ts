@@ -154,10 +154,17 @@ export class OpenAIProvider implements AIProvider {
       const delta = choice.delta as
         | (OpenAI.Chat.Completions.ChatCompletionChunk.Choice.Delta & {
             reasoning_content?: string | null;
+            /**
+             * OpenAI's open-weight models (gpt-oss, served by Groq and
+             * others) reason in `reasoning`; DeepSeek-style endpoints use
+             * `reasoning_content`. Both are the model's thinking, and the
+             * UI shows it.
+             */
+            reasoning?: string | null;
           })
         | undefined;
 
-      const reasoning = delta?.reasoning_content;
+      const reasoning = delta?.reasoning_content ?? delta?.reasoning;
       if (typeof reasoning === 'string' && reasoning.length > 0) {
         onEvent({ type: 'thinking_delta', text: reasoning });
       }
