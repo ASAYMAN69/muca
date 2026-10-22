@@ -157,8 +157,13 @@ export interface ApprovalGate {
   readonly source?: ApprovalSource;
 }
 
-/** The two ways an approval can be obtained. */
-export type ApprovalSource = 'elicitation' | 'http' | 'fallback';
+/**
+ * The two ways an approval can be obtained.
+ *
+ * `policy` is the live path: the server decides from the user's own
+ * policies, over the WebSocket.
+ */
+export type ApprovalSource = 'elicitation' | 'http' | 'fallback' | 'policy';
 
 /**
  * A gate that can also say *"nobody has decided yet"*.

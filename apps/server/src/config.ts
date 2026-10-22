@@ -74,8 +74,24 @@ const envSchema = z.object({
   MCP_PROTOCOL_VERSION: z.string().default('2025-11-25'),
   MCP_PUBLIC_URL: z.string().default(''),
 
-  /** Where the run history is written. Relative paths resolve from the repo root. */
-  RUN_HISTORY_DIR: z.string().default(''),
+  /**
+   * The SQLite database.
+   *
+   * One global database, by default `~/.adh/database/muca.db`. The path
+   * is configurable so the tests can point at a temporary file — they
+   * must never touch the user's real database.
+   */
+  MUCA_DATABASE_PATH: z.string().default(''),
+
+  /**
+   * The fraction of the model's input limit at which a conversation is
+   * compacted. 0.8 means "compact when four fifths of the window is
+   * full".
+   */
+  CONTEXT_COMPACTION_THRESHOLD: z.coerce.number().min(0.1).max(0.99).default(0.8),
+
+  /** How many turns are kept verbatim when a conversation is compacted. */
+  CONTEXT_KEEP_TURNS: z.coerce.number().int().min(1).max(20).default(3),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -130,8 +146,12 @@ export interface AppConfig {
     protocolVersion: string;
     publicUrl: string;
   };
-  /** The directory the run history is written to. Empty means "the default". */
-  runHistoryDir: string;
+  /** The SQLite database. Empty means "the default". */
+  databasePath: string;
+  /** The fraction of the input limit at which a conversation is compacted. */
+  compactionThreshold: number;
+  /** How many turns are kept verbatim when a conversation is compacted. */
+  compactionKeepTurns: number;
 }
 
 function trimTrailingSlashes(value: string): string {
@@ -205,6 +225,8 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       protocolVersion: parsed.MCP_PROTOCOL_VERSION,
       publicUrl,
     },
-    runHistoryDir: parsed.RUN_HISTORY_DIR.trim(),
+    databasePath: parsed.MUCA_DATABASE_PATH.trim(),
+    compactionThreshold: parsed.CONTEXT_COMPACTION_THRESHOLD,
+    compactionKeepTurns: parsed.CONTEXT_KEEP_TURNS,
   };
 }

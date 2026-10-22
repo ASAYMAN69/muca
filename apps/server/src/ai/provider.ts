@@ -1,5 +1,9 @@
 import { z } from 'zod';
 
+import type { ProviderStreamEvent } from './stream.js';
+
+export type { ProviderStreamEvent } from './stream.js';
+
 /**
  * Provider-agnostic tool definition. This is the shape the agent loop works
  * with, independent of which AI SDK is behind it.
@@ -48,6 +52,22 @@ export interface AIProvider {
     tools: ProviderTool[];
     temperature?: number;
   }): Promise<ProviderResponse>;
+
+  /**
+   * Streams the reply, if this provider can.
+   *
+   * It is **optional**: a provider that cannot stream still works, and
+   * the agent falls back to one ordinary call and reports the text as a
+   * single delta. The MCP path uses `chat` and is unaffected.
+   */
+  chatStream?(
+    input: {
+      messages: ProviderMessage[];
+      tools: ProviderTool[];
+      temperature?: number;
+    },
+    onEvent: (event: ProviderStreamEvent) => void,
+  ): Promise<ProviderResponse>;
 }
 
 /** Zod schema for a tool argument envelope used by the OpenAI adapter. */

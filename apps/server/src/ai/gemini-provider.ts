@@ -5,6 +5,8 @@ import type {
   ProviderTool,
   ProviderToolCall,
 } from './provider.js';
+import type { ProviderStreamSink } from './stream.js';
+import { readSseEvents } from './sse.js';
 
 /**
  * Google Gemini adapter (`generateContent`).
@@ -28,6 +30,8 @@ export interface FetchLikeResponse {
   status: number;
   json(): Promise<unknown>;
   text(): Promise<string>;
+  /** The raw body, when the response is a stream. */
+  body?: AsyncIterable<Uint8Array> | null;
 }
 
 export type FetchLike = (
@@ -137,6 +141,118 @@ export class GeminiProvider implements AIProvider {
 
     const payload = (await response.json()) as GeminiResponse;
     return this.fromGeminiResponse(payload);
+  }
+
+  /**
+   * Streams the reply.
+   *
+   * Gemini streams server-sent events when `alt=sse` is on the URL. The
+   * deltas are handed to `onEvent` as they arrive; the returned response
+   * has the same shape the non-streaming call returns.
+   *
+   * A provider that will not stream is not a failure: the adapter falls
+   * back to one non-streaming call and reports the text as a single
+   * delta.
+   */
+  async chatStream(
+    input: {
+      messages: ProviderMessage[];
+      tools: ProviderTool[];
+      temperature?: number;
+    },
+    onEvent: ProviderStreamSink,
+  ): Promise<ProviderResponse> {
+    const { system, contents } = splitSystem(input.messages);
+
+    const response = await this.fetchImpl(
+      `${this.endpoint}/models/${this.model}:streamGenerateContent?alt=sse`,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-goog-api-key': this.apiKey,
+        },
+        body: JSON.stringify({
+          contents,
+          ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
+          generationConfig: {
+            maxOutputTokens: this.maxTokens,
+            ...(input.temperature !== undefined
+              ? { temperature: input.temperature }
+              : {}),
+          },
+          ...(input.tools.length > 0
+            ? { tools: toGeminiTools(input.tools) }
+            : {}),
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new Error(
+        `Gemini request failed with status ${response.status}: ${sanitise(body)}`,
+      );
+    }
+
+    const stream = response.body;
+    if (!stream) {
+      // No stream: fall back to one call and report the text as a delta.
+      const result = await this.chat(input);
+      if (result.content) onEvent({ type: 'message_delta', text: result.content });
+      return result;
+    }
+
+    const textParts: string[] = [];
+    const toolCalls: ProviderToolCall[] = [];
+    let finishReason: string | undefined;
+
+    for await (const event of readSseEvents(stream)) {
+      if (!event.data || event.data === '[DONE]') continue;
+
+      let payload: GeminiResponse;
+      try {
+        payload = JSON.parse(event.data) as GeminiResponse;
+      } catch {
+        continue;
+      }
+
+      const candidate = payload.candidates?.[0];
+      if (candidate?.finishReason) finishReason = candidate.finishReason;
+
+      const parts = candidate?.content?.parts ?? [];
+      for (const part of parts) {
+        if ('text' in part && typeof part.text === 'string') {
+          textParts.push(part.text);
+          onEvent({ type: 'message_delta', text: part.text });
+          continue;
+        }
+        if ('functionCall' in part && part.functionCall) {
+          const call = part.functionCall;
+          const id = this.synthesiseId(call.name ?? 'tool');
+          this.callIds.set(id, {
+            name: call.name ?? 'tool',
+            args: call.args ?? {},
+          });
+          const toolCall: ProviderToolCall = {
+            id,
+            name: call.name ?? 'tool',
+            arguments: JSON.stringify(call.args ?? {}),
+          };
+          toolCalls.push(toolCall);
+          onEvent({ type: 'tool_call', call: toolCall });
+        }
+      }
+    }
+
+    const content = textParts.length > 0 ? textParts.join('') : null;
+
+    return {
+      content,
+      toolCalls,
+      finishReason:
+        toolCalls.length > 0 ? 'tool_calls' : mapFinishReason(finishReason),
+    };
   }
 
   /**
@@ -345,5 +461,8 @@ const defaultFetch: FetchLike = async (url, init) => {
     status: response.status,
     json: () => response.json(),
     text: () => response.text(),
+    body: response.body
+      ? (response.body as unknown as AsyncIterable<Uint8Array>)
+      : null,
   };
 };

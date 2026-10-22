@@ -158,6 +158,9 @@ Everything lives in `.env` (see `.env.example`). Nothing is hardcoded, and
 | `BEDROCK_MODEL_ID` | — | AWS Bedrock, via the standard AWS credential chain |
 | `MCP_PROTOCOL_VERSION` | `2025-11-25` | Protocol version advertised by the server |
 | `MCP_PUBLIC_URL` | `http://localhost:${PORT}/api/v1/mcp` | Public URL of the MCP endpoint |
+| `MUCA_DATABASE_PATH` | `~/.adh/database/muca.db` | Where sessions, events and policies are stored |
+| `CONTEXT_COMPACTION_THRESHOLD` | `0.8` | Compact the conversation at this fraction of the model's input limit |
+| `CONTEXT_KEEP_TURNS` | `3` | How many recent turns compaction keeps verbatim |
 
 ---
 

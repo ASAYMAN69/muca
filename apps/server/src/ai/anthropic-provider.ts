@@ -5,6 +5,8 @@ import type {
   ProviderTool,
   ProviderToolCall,
 } from './provider.js';
+import type { ProviderStreamSink } from './stream.js';
+import { readSseEvents } from './sse.js';
 
 /**
  * Anthropic Messages API adapter.
@@ -29,6 +31,8 @@ export interface FetchLikeResponse {
   status: number;
   json(): Promise<unknown>;
   text(): Promise<string>;
+  /** The raw body, when the response is a stream. */
+  body?: AsyncIterable<Uint8Array> | null;
 }
 
 export type FetchLike = (
@@ -53,6 +57,16 @@ export interface AnthropicProviderOptions {
   maxTokens?: number;
   /** The Anthropic API version header. */
   apiVersion?: string;
+  /**
+   * Turns on Anthropic's prompt cache.
+   *
+   * The cache needs `cache_control` on a content block, which means the
+   * system prompt has to be sent as an **array** of blocks rather than a
+   * string. That changes the shape of the request, so it is opt-in: the
+   * plain request is unchanged, and the long-running live path turns it
+   * on.
+   */
+  cache?: boolean;
 }
 
 /** Anthropic's stop reasons, mapped onto Muca's four. */
@@ -79,6 +93,7 @@ export class AnthropicProvider implements AIProvider {
   private readonly maxTokens: number;
   private readonly apiVersion: string;
   private readonly fetchImpl: FetchLike;
+  private readonly cache: boolean;
 
   constructor(options: AnthropicProviderOptions) {
     this.apiKey = options.apiKey;
@@ -87,6 +102,7 @@ export class AnthropicProvider implements AIProvider {
     this.maxTokens = options.maxTokens ?? 2048;
     this.apiVersion = options.apiVersion ?? '2023-06-01';
     this.fetchImpl = options.fetchImpl ?? (defaultFetch as FetchLike);
+    this.cache = options.cache ?? false;
   }
 
   async chat(input: {
@@ -94,25 +110,10 @@ export class AnthropicProvider implements AIProvider {
     tools: ProviderTool[];
     temperature?: number;
   }): Promise<ProviderResponse> {
-    const { system, messages } = splitSystem(input.messages);
-
     const response = await this.fetchImpl(`${this.endpoint}/v1/messages`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': this.apiKey,
-        'anthropic-version': this.apiVersion,
-      },
-      body: JSON.stringify({
-        model: this.model,
-        max_tokens: this.maxTokens,
-        ...(system ? { system } : {}),
-        ...(input.temperature !== undefined
-          ? { temperature: input.temperature }
-          : {}),
-        messages,
-        ...(input.tools.length > 0 ? { tools: toAnthropicTools(input.tools) } : {}),
-      }),
+      headers: this.headers(),
+      body: JSON.stringify(this.requestBody(input)),
     });
 
     if (!response.ok) {
@@ -125,6 +126,248 @@ export class AnthropicProvider implements AIProvider {
     const payload = (await response.json()) as AnthropicResponse;
     return fromAnthropicResponse(payload);
   }
+
+  /**
+   * Streams the reply.
+   *
+   * The Messages API streams server-sent events. The deltas are handed to
+   * `onEvent` as they arrive; the returned response is the same shape the
+   * non-streaming call returns, so the agent loop does not have to care
+   * which one it used.
+   *
+   * A provider that will not stream is not a failure: the adapter falls
+   * back to one non-streaming call and reports the text as a single
+   * delta.
+   */
+  async chatStream(
+    input: {
+      messages: ProviderMessage[];
+      tools: ProviderTool[];
+      temperature?: number;
+    },
+    onEvent: ProviderStreamSink,
+  ): Promise<ProviderResponse> {
+    const response = await this.fetchImpl(`${this.endpoint}/v1/messages`, {
+      method: 'POST',
+      headers: this.headers(),
+      body: JSON.stringify({ ...this.requestBody(input), stream: true }),
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new Error(
+        `Anthropic request failed with status ${response.status}: ${sanitise(body)}`,
+      );
+    }
+
+    const stream = response.body;
+    if (!stream) {
+      // No stream: fall back to one call and report the text as a delta.
+      const result = await this.chat(input);
+      if (result.content) onEvent({ type: 'message_delta', text: result.content });
+      return result;
+    }
+
+    return this.readStream(stream, onEvent);
+  }
+
+  /** The headers of every request. The key never appears in the URL. */
+  private headers(): Record<string, string> {
+    return {
+      'content-type': 'application/json',
+      'x-api-key': this.apiKey,
+      'anthropic-version': this.apiVersion,
+    };
+  }
+
+  /** The body of a request, with or without the cache breakpoints. */
+  private requestBody(input: {
+    messages: ProviderMessage[];
+    tools: ProviderTool[];
+    temperature?: number;
+  }): Record<string, unknown> {
+    const { system, messages } = splitSystem(input.messages);
+
+    return {
+      model: this.model,
+      max_tokens: this.maxTokens,
+      ...(system
+        ? { system: this.cache ? cacheSystem(system) : system }
+        : {}),
+      ...(input.temperature !== undefined
+        ? { temperature: input.temperature }
+        : {}),
+      messages: this.cache ? cacheLastMessage(messages) : messages,
+      ...(input.tools.length > 0 ? { tools: toAnthropicTools(input.tools) } : {}),
+    };
+  }
+
+  /**
+   * Reads Anthropic's server-sent events.
+   *
+   * The stream is a sequence of `content_block_start`, `content_block_delta`
+   * and `content_block_stop` events. A tool call's arguments arrive as
+   * `input_json_delta` fragments, which are joined until the block ends.
+   */
+  private async readStream(
+    stream: AsyncIterable<Uint8Array>,
+    onEvent: ProviderStreamSink,
+  ): Promise<ProviderResponse> {
+    const blocks = new Map<
+      number,
+      { type: string; id?: string; name?: string; text: string; json: string }
+    >();
+    const textParts: string[] = [];
+    const toolCalls: ProviderToolCall[] = [];
+    let stopReason: string | undefined;
+
+    for await (const event of readSseEvents(stream)) {
+      if (!event.data || event.data === '[DONE]') continue;
+
+      let payload: AnthropicStreamEvent;
+      try {
+        payload = JSON.parse(event.data) as AnthropicStreamEvent;
+      } catch {
+        continue;
+      }
+
+      switch (payload.type) {
+        case 'content_block_start': {
+          const block = payload.content_block ?? {};
+          blocks.set(payload.index ?? 0, {
+            type: block.type ?? 'text',
+            id: block.id,
+            name: block.name,
+            text: '',
+            json: '',
+          });
+          break;
+        }
+
+        case 'content_block_delta': {
+          const index = payload.index ?? 0;
+          const block = blocks.get(index) ?? {
+            type: 'text',
+            text: '',
+            json: '',
+          };
+          const delta = payload.delta ?? {};
+
+          if (delta.type === 'text_delta') {
+            const text = delta.text ?? '';
+            block.text += text;
+            textParts.push(text);
+            onEvent({ type: 'message_delta', text });
+          } else if (delta.type === 'thinking_delta') {
+            const text = delta.thinking ?? '';
+            block.text += text;
+            onEvent({ type: 'thinking_delta', text });
+          } else if (delta.type === 'input_json_delta') {
+            block.json += delta.partial_json ?? '';
+          }
+
+          blocks.set(index, block);
+          break;
+        }
+
+        case 'content_block_stop': {
+          const block = blocks.get(payload.index ?? 0);
+          if (block && block.type === 'tool_use') {
+            const call: ProviderToolCall = {
+              id: block.id ?? `toolu_${payload.index ?? 0}`,
+              name: block.name ?? 'tool',
+              arguments: block.json.length > 0 ? block.json : '{}',
+            };
+            toolCalls.push(call);
+            onEvent({ type: 'tool_call', call });
+          }
+          break;
+        }
+
+        case 'message_delta': {
+          stopReason = payload.delta?.stop_reason ?? stopReason;
+          break;
+        }
+
+        default:
+          break;
+      }
+    }
+
+    const content = textParts.length > 0 ? textParts.join('') : null;
+
+    return {
+      content,
+      toolCalls,
+      finishReason:
+        toolCalls.length > 0 ? 'tool_calls' : mapStopReason(stopReason),
+    };
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Prompt caching                                                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The system prompt, as a cached content block.
+ *
+ * Anthropic only accepts `cache_control` on a block, so a cached system
+ * prompt is an array with one block in it.
+ */
+export function cacheSystem(system: string): unknown[] {
+  return [
+    {
+      type: 'text',
+      text: system,
+      cache_control: { type: 'ephemeral' },
+    },
+  ];
+}
+
+/**
+ * Puts the cache breakpoint on the last message.
+ *
+ * The breakpoint marks the end of the stable prefix: everything up to it
+ * is cached, so the next turn only pays for what comes after.
+ */
+export function cacheLastMessage(messages: AnthropicMessage[]): AnthropicMessage[] {
+  if (messages.length === 0) return messages;
+
+  const out = messages.map((message) => ({
+    ...message,
+    content: message.content.map((block) => ({ ...block })),
+  }));
+
+  const last = out[out.length - 1]!;
+  const lastBlock = last.content[last.content.length - 1];
+  if (lastBlock) {
+    last.content[last.content.length - 1] = {
+      ...lastBlock,
+      cache_control: { type: 'ephemeral' },
+    };
+  }
+
+  return out;
+}
+
+/** The events Anthropic's stream sends. */
+interface AnthropicStreamEvent {
+  type?: string;
+  index?: number;
+  content_block?: {
+    type?: string;
+    id?: string;
+    name?: string;
+    text?: string;
+  };
+  delta?: {
+    type?: string;
+    text?: string;
+    thinking?: string;
+    partial_json?: string;
+    stop_reason?: string;
+  };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -133,19 +376,26 @@ export class AnthropicProvider implements AIProvider {
 
 /** The content blocks Anthropic understands. */
 type AnthropicContentBlock =
-  | { type: 'text'; text: string }
+  | { type: 'text'; text: string; cache_control?: CacheControl }
   | {
       type: 'tool_use';
       id: string;
       name: string;
       input: Record<string, unknown>;
+      cache_control?: CacheControl;
     }
   | {
       type: 'tool_result';
       tool_use_id: string;
       content: string;
       is_error?: boolean;
+      cache_control?: CacheControl;
     };
+
+/** Anthropic's prompt-cache marker. */
+export interface CacheControl {
+  type: 'ephemeral';
+}
 
 interface AnthropicMessage {
   role: 'user' | 'assistant';
@@ -298,5 +548,8 @@ const defaultFetch: FetchLike = async (url, init) => {
     status: response.status,
     json: () => response.json(),
     text: () => response.text(),
+    body: response.body
+      ? (response.body as unknown as AsyncIterable<Uint8Array>)
+      : null,
   };
 };

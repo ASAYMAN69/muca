@@ -5,20 +5,13 @@ import { useId, useState } from 'react';
 import type { Artifact, ArtifactStatus } from '../../lib/artifacts';
 
 const STATUS_TONE: Record<ArtifactStatus, string> = {
-  success:
-    'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200',
-  failed:
-    'border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200',
-  in_progress:
-    'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200',
-  queued:
-    'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200',
-  cancelled:
-    'border-neutral-300 bg-neutral-100 text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300',
-  neutral:
-    'border-neutral-300 bg-neutral-100 text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300',
-  unknown:
-    'border-neutral-300 bg-neutral-100 text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300',
+  success: 'border-good-line bg-good-soft text-good',
+  failed: 'border-bad-line bg-bad-soft text-bad',
+  in_progress: 'border-warn-line bg-warn-soft text-warn',
+  queued: 'border-warn-line bg-warn-soft text-warn',
+  cancelled: 'border-line bg-surface-sunken text-ink-muted',
+  neutral: 'border-line bg-surface-sunken text-ink-muted',
+  unknown: 'border-line bg-surface-sunken text-ink-muted',
 };
 
 const STATUS_LABEL: Record<ArtifactStatus, string> = {
@@ -55,14 +48,14 @@ export function ArtifactCard({ artifact }: { artifact: Artifact }) {
   const rawId = useId();
 
   return (
-    <article className="overflow-hidden rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900/60">
-      <header className="flex flex-wrap items-start justify-between gap-2 border-b border-neutral-100 px-3.5 py-2.5 dark:border-neutral-800">
+    <article className="overflow-hidden rounded-lg border border-line bg-surface-raised">
+      <header className="flex flex-wrap items-start justify-between gap-2 border-b border-line px-3.5 py-2.5">
         <div className="min-w-0">
-          <h4 className="truncate text-[13px] font-semibold text-neutral-900 dark:text-neutral-100">
+          <h4 className="truncate text-[13px] font-semibold text-ink">
             {artifact.title}
           </h4>
           {artifact.subtitle ? (
-            <p className="mt-0.5 text-[12px] leading-relaxed text-neutral-600 dark:text-neutral-400">
+            <p className="mt-0.5 text-[12px] leading-relaxed text-ink-muted">
               {artifact.subtitle}
             </p>
           ) : null}
@@ -77,11 +70,11 @@ export function ArtifactCard({ artifact }: { artifact: Artifact }) {
               key={`${field.label}-${field.value}`}
               className={field.block ? 'col-span-2 sm:col-span-3' : 'min-w-0'}
             >
-              <dt className="text-[10px] font-medium uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+              <dt className="text-[10px] font-medium uppercase tracking-[0.12em] text-ink-faint">
                 {field.label}
               </dt>
               <dd
-                className={`mt-0.5 truncate text-[12px] text-neutral-800 dark:text-neutral-200 ${
+                className={`mt-0.5 truncate text-[12px] text-ink ${
                   field.mono ? 'font-mono' : ''
                 }`}
               >
@@ -93,7 +86,7 @@ export function ArtifactCard({ artifact }: { artifact: Artifact }) {
       ) : null}
 
       {artifact.body ? (
-        <pre className="mx-3.5 mb-3 overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-neutral-50 px-3 py-2 font-mono text-[11px] leading-relaxed text-neutral-700 dark:bg-neutral-950/60 dark:text-neutral-300">
+        <pre className="mx-3.5 mb-3 overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-surface-sunken px-3 py-2 font-mono text-[11px] leading-relaxed text-ink-muted">
           {artifact.body}
         </pre>
       ) : null}
@@ -103,7 +96,7 @@ export function ArtifactCard({ artifact }: { artifact: Artifact }) {
           {artifact.lines.map((line, index) => (
             <li
               key={`${index}-${line.slice(0, 24)}`}
-              className="truncate font-mono text-[11px] text-neutral-600 dark:text-neutral-400"
+              className="truncate font-mono text-[11px] text-ink-muted"
             >
               {line}
             </li>
@@ -112,13 +105,13 @@ export function ArtifactCard({ artifact }: { artifact: Artifact }) {
       ) : null}
 
       {artifact.raw !== undefined ? (
-        <div className="border-t border-neutral-100 dark:border-neutral-800">
+        <div className="border-t border-line">
           <button
             type="button"
             onClick={() => setShowRaw((value) => !value)}
             aria-expanded={showRaw}
             aria-controls={rawId}
-            className="flex w-full items-center gap-1.5 px-3.5 py-2 text-left text-[11px] font-medium text-neutral-500 transition hover:text-neutral-800 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100 dark:focus-visible:outline-neutral-100"
+            className="flex w-full items-center gap-1.5 px-3.5 py-2 text-left text-[11px] font-medium text-ink-faint transition-colors duration-150 hover:text-ink-muted focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
           >
             <span aria-hidden="true" className="text-[9px]">
               {showRaw ? '▾' : '▸'}
@@ -128,7 +121,7 @@ export function ArtifactCard({ artifact }: { artifact: Artifact }) {
           {showRaw ? (
             <pre
               id={rawId}
-              className="max-h-72 overflow-auto border-t border-neutral-100 bg-neutral-50/60 px-3.5 py-2.5 font-mono text-[11px] leading-relaxed text-neutral-600 dark:border-neutral-800 dark:bg-neutral-950/50 dark:text-neutral-400"
+              className="max-h-72 overflow-auto border-t border-line bg-surface-sunken px-3.5 py-2.5 font-mono text-[11px] leading-relaxed text-ink-muted"
             >
               {safeStringify(artifact.raw)}
             </pre>

@@ -3,20 +3,28 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
+  createPolicy,
+  createSession,
+  deletePolicy,
   fetchHealth,
+  fetchPolicies,
+  fetchSession,
+  fetchSessions,
   fetchTask,
+  fetchTools,
   parseAgentEvents,
   sendChat,
+  updatePolicy,
   type AgentEvent,
   type ChatTurn,
   type HealthResponse,
   type PendingCall,
+  type Policy,
+  type SessionSummary,
   type TaskSnapshot,
+  type ToolSummary,
 } from '../lib/api';
-import {
-  buildArtifact,
-  type Artifact,
-} from '../lib/artifacts';
+import { buildArtifact, type Artifact } from '../lib/artifacts';
 import {
   DEMO_APPROVED_EVENTS,
   DEMO_EVENTS,
@@ -25,10 +33,16 @@ import {
   DEMO_PENDING,
   DEMO_REQUEST,
 } from '../lib/demo';
-import type { McpSession } from '../lib/mcp';
+import { deriveTitle } from '../lib/format';
+import { LiveClient, type LiveFrame, type LiveStatus } from '../lib/live';
+import { applyFrame, emptyRun, type LiveRunState } from '../lib/live-run';
 import { buildTimeline, type TimelineStep } from '../lib/timeline';
-import { McpPanel } from './components/mcp-panel';
+import { HelpPanel } from './components/help-panel';
+import { McpDetails, McpStatusPill, useMcpSession } from './components/mcp-panel';
+import { PoliciesView } from './components/policies-view';
 import { RunHistoryPanel } from './components/run-history';
+import { SessionSidebar } from './components/session-sidebar';
+import { ThinkingRow } from './components/thinking-row';
 import { TimelineView } from './components/timeline';
 
 /* -------------------------------------------------------------------------- */
@@ -59,7 +73,19 @@ interface Run {
   demo?: boolean;
   /** True when the user declined the pending call. */
   declined?: boolean;
+  /** The model's reasoning, while it is streaming. */
+  thinking?: string;
+  /** True while the thinking row is live. */
+  thinkingActive?: boolean;
+  /** The question the run is parked on. */
+  clarificationId?: string;
+  /** The tool call that is running and has not answered yet. */
+  openCallId?: string;
+  /** Permission request id -> the tool call it belongs to. */
+  requests?: Record<string, string>;
 }
+
+type View = 'timeline' | 'policies';
 
 let runCounter = 0;
 
@@ -75,6 +101,11 @@ function isTerminalTaskStatus(status: string | undefined): boolean {
   return status !== undefined && TERMINAL_TASK_STATUSES.includes(status);
 }
 
+/** A local session, for when the server has no session list yet. */
+function localSessionId(): string {
+  return `local-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 /* -------------------------------------------------------------------------- */
 /* The page                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -85,13 +116,43 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
-  const [mcpSession, setMcpSession] = useState<McpSession | null>(null);
-  const [demoMode, setDemoMode] = useState(false);
+  const [tools, setTools] = useState<ToolSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
-  /** Task ids whose route 404'd (or returned nothing): stop polling them. */
-  const unavailableTasks = useRef<Set<string>>(new Set());
+
+  /* Sessions */
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [sessionsAvailable, setSessionsAvailable] = useState(true);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+
+  /* The shell */
+  const [view, setView] = useState<View>('timeline');
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [mcpOpen, setMcpOpen] = useState(false);
+
+  /* The live socket */
+  const [liveStatus, setLiveStatus] = useState<LiveStatus>('idle');
+  const liveRef = useRef<LiveClient | null>(null);
+  const framesRef = useRef<(frame: LiveFrame) => void>(() => undefined);
+  const [decisionsInFlight, setDecisionsInFlight] = useState<string[]>([]);
+
+  /* Policies */
+  const [policies, setPolicies] = useState<Policy[]>([]);
+  const [policiesAvailable, setPoliciesAvailable] = useState(true);
+
+  const { session: mcpSession, reconnect: reconnectMcp } = useMcpSession(health);
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  /** Task ids whose route 404'd (or returned nothing): stop polling them. */
+  const unavailableTasks = useRef<Set<string>>(new Set());
+
+  const aiEnabled = health?.ai?.enabled === true;
+  const liveMode = liveStatus === 'live';
+  const destructiveTools = useDestructiveTools(health, mcpSession.tools);
+
+  /* ---------------------------------------------------------------------- */
+  /* Bootstrap                                                               */
+  /* ---------------------------------------------------------------------- */
 
   useEffect(() => {
     fetchHealth()
@@ -101,6 +162,39 @@ export default function Home() {
           cause instanceof Error ? cause.message : 'Could not reach the API',
         );
       });
+    void fetchTools().then(setTools);
+  }, []);
+
+  /* The sessions. The route may not exist yet: then the app runs in a
+     single local session and says so. */
+  useEffect(() => {
+    let cancelled = false;
+    void fetchSessions().then((list) => {
+      if (cancelled) return;
+      if (list === null) {
+        // The server has no session list yet: one local session.
+        setSessionsAvailable(false);
+        setSessionId((current) => current ?? localSessionId());
+        return;
+      }
+      setSessions(list);
+      setSessionId((current) => current ?? list[0]?.id ?? localSessionId());
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /* The policies. The route may not exist yet either. */
+  useEffect(() => {
+    let cancelled = false;
+    void fetchPolicies().then((list) => {
+      if (cancelled) return;
+      setPolicies(list);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -108,59 +202,195 @@ export default function Home() {
   }, [runs, busy]);
 
   /**
-   * Poll a long-running MCP task.
-   *
-   * The backend returns a task handle for the diagnosis workflow. We
-   * poll it while it is not in a terminal state. The route is new, so a
-   * 404 simply stops the polling — it never blocks the UI.
+   * The view and the help panel live in the URL, so a link can point at
+   * them and the browser's back button behaves.
    */
   useEffect(() => {
-    const active = runs.find(
-      (run) =>
-        run.taskId &&
-        !unavailableTasks.current.has(run.taskId) &&
-        !isTerminalTaskStatus(run.task?.status),
-    );
-    if (!active?.taskId) return;
-
-    let cancelled = false;
+    const params = new URLSearchParams(window.location.search);
+    const wantedView = params.get('view') === 'policies' ? 'policies' : null;
+    const wantedHelp = params.get('help') === '1';
+    if (!wantedView && !wantedHelp) return;
+    // After the first paint, so the markup the server sent and the first
+    // client render agree.
     const timer = window.setTimeout(() => {
-      void fetchTask(active.taskId!).then((task) => {
-        if (cancelled) return;
-        if (!task) {
-          unavailableTasks.current.add(active.taskId!);
-          return;
-        }
-        setRuns((previous) =>
-          previous.map((run) =>
-            run.id === active.id ? { ...run, task } : run,
-          ),
+      if (wantedView) setView(wantedView);
+      if (wantedHelp) setHelpOpen(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (view === 'policies') params.set('view', 'policies');
+    else params.delete('view');
+    if (helpOpen) params.set('help', '1');
+    else params.delete('help');
+    const query = params.toString();
+    window.history.replaceState(
+      null,
+      '',
+      query ? `?${query}` : window.location.pathname,
+    );
+  }, [view, helpOpen]);
+
+  /* ---------------------------------------------------------------------- */
+  /* Sessions                                                                */
+  /* ---------------------------------------------------------------------- */
+
+  const refreshSession = useCallback(async (id: string) => {
+    const detail = await fetchSession(id);
+    if (!detail) return;
+    setSessions((current) =>
+      current.map((session) =>
+        session.id === id
+          ? { ...session, title: detail.title ?? session.title }
+          : session,
+      ),
+    );
+  }, []);
+
+  /* ---------------------------------------------------------------------- */
+  /* The live socket                                                         */
+  /* ---------------------------------------------------------------------- */
+
+  /** Applies one frame from the server to the run it belongs to. */
+  const handleFrame = useCallback((frame: LiveFrame) => {
+    setRuns((previous) => {
+      if (frame.type === 'run_started') {
+        const data = (frame.data ?? {}) as { message?: string };
+        const runId = frame.runId ?? `live-${previous.length + 1}`;
+        const existing = previous.find((run) => run.runId === runId);
+        if (existing) return previous;
+        const state = applyFrame(emptyRun(runId), frame);
+        return [
+          ...previous,
+          {
+            id: runId,
+            request: data.message ?? '',
+            events: state.events,
+            pending: state.pending,
+            awaitingConfirmation: state.awaitingConfirmation,
+            text: state.text,
+            runId,
+            thinking: state.thinking,
+            thinkingActive: state.thinkingActive,
+            clarificationId: state.clarification?.id,
+          },
+        ];
+      }
+
+      const index = previous.findIndex(
+        (run) => frame.runId !== null && run.runId === frame.runId,
+      );
+      if (index === -1) return previous;
+
+      const run = previous[index];
+      const state: LiveRunState = applyFrame(
+        {
+          events: run.events,
+          text: run.text,
+          thinking: run.thinking ?? '',
+          thinkingActive: run.thinkingActive ?? false,
+          pending: run.pending,
+          clarification: run.clarificationId
+            ? { id: run.clarificationId, question: '' }
+            : null,
+          awaitingConfirmation: run.awaitingConfirmation,
+          openCallId: run.openCallId,
+          requests: run.requests ?? {},
+          runId: run.runId,
+          toolCallCount: 0,
+          approvalCount: 0,
+          status: 'running',
+        },
+        frame,
+      );
+
+      const next = [...previous];
+      next[index] = {
+        ...run,
+        events: state.events,
+        text: state.text,
+        thinking: state.thinking,
+        thinkingActive: state.thinkingActive,
+        pending: state.pending,
+        awaitingConfirmation: state.awaitingConfirmation,
+        clarificationId: state.clarification?.id,
+        openCallId: state.openCallId,
+        requests: state.requests,
+      };
+      return next;
+    });
+
+    // A decision that has been answered is no longer in flight.
+    if (frame.type === 'permission_resolved') {
+      const data = (frame.data ?? {}) as { requestId?: string };
+      if (data.requestId) {
+        setDecisionsInFlight((current) =>
+          current.filter((id) => id !== data.requestId),
         );
-      });
-    }, 1500);
+      }
+    }
+  }, []);
 
+  useEffect(() => {
+    framesRef.current = handleFrame;
+  }, [handleFrame]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    const client = new LiveClient({
+      sessionId,
+      onFrame: (frame) => framesRef.current(frame),
+      onStatus: (status) => setLiveStatus(status),
+      onGap: () => {
+        // Frames are missing and cannot be replayed: refetch the session.
+        void refreshSession(sessionId);
+      },
+    });
+    liveRef.current = client;
+    client.connect();
     return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
+      client.close();
+      liveRef.current = null;
     };
-  }, [runs]);
+  }, [sessionId, refreshSession]);
 
-  const aiEnabled = health?.ai?.enabled === true;
+  /* ---------------------------------------------------------------------- */
+  /* Sessions                                                                */
+  /* ---------------------------------------------------------------------- */
 
-  /** The tools the server marked destructive, for the timeline badges. */
-  const destructiveTools = useMemo(() => {
-    const names = new Set<string>();
-    for (const tool of health?.tools ?? []) {
-      if (tool?.destructive) names.add(tool.name);
+  const selectSession = useCallback((id: string) => {
+    setSessionId(id);
+    setRuns([]);
+    setView('timeline');
+    setSidebarOpen(false);
+  }, []);
+
+  const newSession = useCallback(async () => {
+    const created = await createSession('');
+    if (created) {
+      setSessions((current) => [created, ...current]);
+      setSessionId(created.id);
+    } else {
+      const local: SessionSummary = {
+        id: localSessionId(),
+        title: 'New session',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      setSessions((current) => [local, ...current]);
+      setSessionId(local.id);
     }
-    // The MCP catalogue is the source of truth; `/health` can lag behind it.
-    for (const tool of mcpSession?.tools ?? []) {
-      if (tool?.destructive) names.add(tool.name);
-    }
-    return names;
-  }, [health, mcpSession]);
+    setRuns([]);
+    setView('timeline');
+    setSidebarOpen(false);
+  }, []);
 
-  /** The conversation history the API expects. */
+  /* ---------------------------------------------------------------------- */
+  /* Running the agent                                                       */
+  /* ---------------------------------------------------------------------- */
+
   const history = useCallback((): ChatTurn[] => {
     const turns: ChatTurn[] = [];
     for (const run of runs) {
@@ -174,13 +404,24 @@ export default function Home() {
     return turns;
   }, [runs]);
 
-  /** Runs the agent and appends the result. */
   const runAgent = useCallback(
     async (message: string, approvedCallIds: string[] = []) => {
       setBusy(true);
       setError(null);
+      const localId = nextRunId();
+      setRuns((previous) => [
+        ...previous,
+        {
+          id: localId,
+          request: message,
+          events: [],
+          pending: null,
+          awaitingConfirmation: false,
+          text: '',
+        },
+      ]);
       try {
-        const response = await sendChat(message, history(), approvedCallIds);
+        const response = await sendChat(message, history(), approvedCallIds, sessionId);
         const { events, unknown } = parseAgentEvents(response.events);
         const text = typeof response.text === 'string' ? response.text : '';
         const pending = response.pendingCall ?? null;
@@ -208,42 +449,82 @@ export default function Home() {
             }
           }
 
-          return [
-            ...previous,
-            {
-              id: nextRunId(),
-              request: message,
-              events,
-              unknownEvents: unknown,
-              text,
-              pending,
-              awaitingConfirmation: pending !== null,
-              runId: response.runId,
-              taskId: response.taskId,
-              task: null,
-            },
-          ];
+          // The live socket may already have shown this run. If it has,
+          // its frames are the richer record, so they win, and the local
+          // placeholder this request created is dropped.
+          const liveIndex = response.runId
+            ? previous.findIndex((run) => run.runId === response.runId)
+            : -1;
+          if (liveIndex !== -1) {
+            const next = previous.filter((run) => run.id !== localId);
+            const index = next.findIndex(
+              (run) => run.runId === response.runId,
+            );
+            if (index !== -1) {
+              const live = next[index];
+              next[index] = {
+                ...live,
+                request: live.request || message,
+                events: live.events.length > 0 ? live.events : events,
+                unknownEvents: unknown,
+                text: live.text || text,
+                pending: pending ?? live.pending,
+                awaitingConfirmation: pending !== null,
+                runId: response.runId ?? live.runId,
+                taskId: response.taskId ?? live.taskId,
+              };
+            }
+            return next;
+          }
+
+          const next = [...previous];
+          const index = next.findIndex((run) => run.id === localId);
+          const target = index === -1 ? next.length - 1 : index;
+          next[target] = {
+            ...next[target],
+            events,
+            unknownEvents: unknown,
+            text,
+            pending,
+            awaitingConfirmation: pending !== null,
+            runId: response.runId,
+            taskId: response.taskId,
+            task: null,
+          };
+          return next;
         });
+
+        // Name the session after the first message, if the server did not.
+        if (sessionId && response.runId) {
+          setSessions((current) =>
+            current.map((session) =>
+              session.id === sessionId && !session.title
+                ? { ...session, title: deriveTitle(message) }
+                : session,
+            ),
+          );
+        }
       } catch (cause) {
         const message =
           cause instanceof Error ? cause.message : 'Something went wrong.';
         setError(message);
-        setRuns((previous) => [
-          ...previous,
-          {
-            id: nextRunId(),
-            request: message,
-            events: [{ type: 'error', message }],
-            pending: null,
-            awaitingConfirmation: false,
-            text: '',
-          },
-        ]);
+        setRuns((previous) =>
+          previous.map((run) =>
+            run.id === localId
+              ? {
+                  ...run,
+                  events: [{ type: 'error', message }],
+                  pending: null,
+                  awaitingConfirmation: false,
+                }
+              : run,
+          ),
+        );
       } finally {
         setBusy(false);
       }
     },
-    [history],
+    [history, sessionId],
   );
 
   const submit = useCallback(
@@ -257,41 +538,85 @@ export default function Home() {
     [busy, input, runAgent],
   );
 
-  const approve = useCallback(
-    (pending: PendingCall) => {
-      void runAgent('yes, go ahead', [pending.callId]);
+  /* ---------------------------------------------------------------------- */
+  /* Decisions                                                               */
+  /* ---------------------------------------------------------------------- */
+
+  const decide = useCallback(
+    (pending: PendingCall, decision: 'allow' | 'deny', remember = false) => {
+      const requestId = pending.requestId ?? pending.callId;
+      if (liveMode && liveRef.current) {
+        setDecisionsInFlight((current) => [...current, requestId]);
+        const sent = liveRef.current.send({
+          type: 'decide',
+          requestId,
+          decision,
+          remember,
+        });
+        if (sent) return;
+        setDecisionsInFlight((current) =>
+          current.filter((id) => id !== requestId),
+        );
+      }
+
+      if (decision === 'allow') {
+        void runAgent('yes, go ahead', [pending.callId]);
+        return;
+      }
+
+      // Deny. Cancelling sends nothing; the rejection is recorded locally.
+      setRuns((previous) =>
+        previous.map((run) =>
+          run.pending?.callId === pending.callId
+            ? {
+                ...run,
+                pending: null,
+                awaitingConfirmation: false,
+                declined: true,
+                events: [
+                  ...run.events,
+                  {
+                    type: 'approval_decision',
+                    id: pending.callId,
+                    name: pending.name,
+                    approved: false,
+                    source: 'http',
+                  },
+                ],
+              }
+            : run,
+        ),
+      );
     },
-    [runAgent],
+    [liveMode, runAgent],
   );
 
-  /** Cancelling sends nothing. The rejection is recorded locally. */
-  const reject = useCallback((pending: PendingCall) => {
-    setRuns((previous) =>
-      previous.map((run) =>
-        run.pending?.callId === pending.callId
-          ? {
-              ...run,
-              pending: null,
-              awaitingConfirmation: false,
-              declined: true,
-              events: [
-                ...run.events,
-                {
-                  type: 'approval_decision',
-                  id: pending.callId,
-                  name: pending.name,
-                  approved: false,
-                  source: 'http',
-                },
-              ],
-            }
-          : run,
-      ),
-    );
-  }, []);
+  const approve = useCallback(
+    (pending: PendingCall) => decide(pending, 'allow'),
+    [decide],
+  );
+
+  const reject = useCallback(
+    (pending: PendingCall) => decide(pending, 'deny'),
+    [decide],
+  );
+
+  const allowAndRemember = useCallback(
+    (pending: PendingCall) => decide(pending, 'allow', true),
+    [decide],
+  );
+
+  /** Answers a question the agent asked. */
+  const answer = useCallback((requestId: string, text: string) => {
+    if (liveRef.current && liveMode) {
+      liveRef.current.send({ type: 'answer', requestId, text });
+      return;
+    }
+    void runAgent(text);
+  }, [liveMode, runAgent]);
 
   /* ---------------------------------------------------------------------- */
-  /* Demo mode                                                              */
+  /* The demo                                                                */
   /* ---------------------------------------------------------------------- */
 
   const startDemo = useCallback(() => {
@@ -326,7 +651,7 @@ export default function Home() {
               name: 'open_pull_request',
               arguments: {
                 title: 'fix: load customer before charging the card in checkout',
-                body: 'Loads the customer before charging the card, plus a regression test.',
+                body: 'Loads the customer first, plus a regression test.',
                 branch: 'fix/checkout-missing-customer',
                 baseBranch: 'main',
               },
@@ -378,7 +703,83 @@ export default function Home() {
   }, []);
 
   /* ---------------------------------------------------------------------- */
-  /* Render                                                                 */
+  /* Policies                                                                */
+  /* ---------------------------------------------------------------------- */
+
+  const createPolicyAction = useCallback(
+    (policy: {
+      toolName: string;
+      match: Record<string, unknown> | null;
+      effect: 'allow' | 'ask' | 'deny';
+      label: string;
+      sessionId: string | null;
+    }) => {
+      void createPolicy(policy).then((created) => {
+        if (created) {
+          setPolicies((current) => [created, ...current]);
+          setPoliciesAvailable(true);
+        } else {
+          setError('The server did not accept the policy.');
+        }
+      });
+    },
+    [],
+  );
+
+  const updatePolicyAction = useCallback(
+    (policyId: string, patch: Partial<Policy>) => {
+      setPolicies((current) =>
+        current.map((policy) =>
+          policy.id === policyId ? { ...policy, ...patch } : policy,
+        ),
+      );
+      void updatePolicy(policyId, patch);
+    },
+    [],
+  );
+
+  const deletePolicyAction = useCallback((policyId: string) => {
+    setPolicies((current) => current.filter((policy) => policy.id !== policyId));
+    void deletePolicy(policyId);
+  }, []);
+
+  /* ---------------------------------------------------------------------- */
+  /* Task polling                                                            */
+  /* ---------------------------------------------------------------------- */
+
+  useEffect(() => {
+    const active = runs.find(
+      (run) =>
+        run.taskId &&
+        !unavailableTasks.current.has(run.taskId) &&
+        !isTerminalTaskStatus(run.task?.status),
+    );
+    if (!active?.taskId) return;
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void fetchTask(active.taskId!).then((task) => {
+        if (cancelled) return;
+        if (!task) {
+          unavailableTasks.current.add(active.taskId!);
+          return;
+        }
+        setRuns((previous) =>
+          previous.map((run) =>
+            run.id === active.id ? { ...run, task } : run,
+          ),
+        );
+      });
+    }, 1500);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [runs]);
+
+  /* ---------------------------------------------------------------------- */
+  /* Render                                                                  */
   /* ---------------------------------------------------------------------- */
 
   const hasRuns = runs.length > 0;
@@ -386,154 +787,274 @@ export default function Home() {
   // Prefer the catalogue the MCP session actually discovered over the
   // snapshot in `/health`; the MCP panel is the source of truth.
   const toolCount =
-    mcpSession?.status === 'connected'
+    mcpSession.status === 'connected'
       ? mcpSession.tools.length
-      : health?.tools?.length;
+      : (health?.tools?.length ?? 0);
+
+  const currentSession = sessions.find((session) => session.id === sessionId);
 
   return (
-    <div className="min-h-screen bg-neutral-50 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
-      <div className="mx-auto flex min-h-screen max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6 lg:flex-row lg:gap-8 lg:py-10">
-        {/* ------------------------------------------------------------- */}
-        {/* Main column                                                     */}
-        {/* ------------------------------------------------------------- */}
-        <main className="flex min-w-0 flex-1 flex-col">
-          <header className="mb-1">
-            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-              <h1 className="text-[22px] font-semibold tracking-tight text-neutral-900 dark:text-neutral-50">
-                Muca
-              </h1>
-              <span className="text-[13px] text-neutral-500 dark:text-neutral-400">
-                Ops Copilot — a self-hosted MCP server
-              </span>
-            </div>
-            <p className="mt-1 max-w-2xl text-[13px] leading-relaxed text-neutral-600 dark:text-neutral-400">
-              An agent that triages deployment and CI failures across your
-              services and — only with your approval — opens a branch and a
-              pull request. Every tool call below travels over the Model
-              Context Protocol.
-            </p>
-          </header>
+    <div className="flex min-h-screen bg-surface text-ink">
+      <SessionSidebar
+        sessions={sessions}
+        currentId={sessionId}
+        onSelect={selectSession}
+        onNew={() => void newSession()}
+        onDemo={startDemo}
+        onOpenPolicies={() => {
+          setView('policies');
+          setSidebarOpen(false);
+        }}
+        onOpenHelp={() => {
+          setHelpOpen(true);
+          setSidebarOpen(false);
+        }}
+        liveStatus={liveStatus}
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        sessionsAvailable={sessionsAvailable}
+      />
 
-          {/* Status strip */}
-          <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
-            {healthError ? (
-              <Chip tone="failed">API unreachable: {healthError}</Chip>
-            ) : health ? (
-              <>
-                <Chip tone="neutral">
-                  MCP {health.mcp?.protocolVersion ?? '—'}
-                </Chip>
-                <Chip tone={aiEnabled ? 'success' : 'warn'}>
-                  {aiEnabled
-                    ? `AI: ${health.ai?.provider ?? 'enabled'}`
-                    : 'AI not configured'}
-                </Chip>
-                <Chip tone="neutral">
-                  {toolCount ?? 0} tools
-                </Chip>
-              </>
-            ) : (
-              <Chip tone="neutral">connecting…</Chip>
-            )}
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* ------------------------------------------------------------- */}
+        {/* The header                                                       */}
+        {/* ------------------------------------------------------------- */}
+        <header className="sticky top-0 z-20 border-b border-line bg-surface/85 backdrop-blur-md">
+          <div className="flex items-center gap-2 px-4 py-2.5 sm:px-6">
+            <button
+              type="button"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open the session list"
+              className="rounded-lg border border-line p-1.5 text-ink-muted transition-[background-color,color] duration-150 hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent md:hidden"
+            >
+              <span aria-hidden="true" className="text-[13px] leading-none">
+                ☰
+              </span>
+            </button>
+
+            <div className="min-w-0 flex-1">
+              <h1 className="truncate text-[14px] font-semibold tracking-tight text-balance text-ink">
+                {view === 'policies'
+                  ? 'Policies'
+                  : (currentSession?.title || 'Muca')}
+              </h1>
+              <p className="truncate text-[11px] text-ink-faint">
+                {view === 'policies'
+                  ? 'when the agent has to ask'
+                  : 'Muca · ops copilot · every tool call travels over MCP'}
+              </p>
+            </div>
+
+            <McpStatusPill
+              session={mcpSession}
+              health={health}
+              open={mcpOpen}
+              onToggle={() => setMcpOpen((value) => !value)}
+            />
+
+            <button
+              type="button"
+              onClick={() => setHelpOpen(true)}
+              aria-label="Open the help panel"
+              className="rounded-lg border border-line px-2 py-1 text-[12px] text-ink-muted transition-[background-color,color] duration-150 hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              ?
+            </button>
           </div>
 
-          {/* Error banner */}
-          {error ? (
-            <div
-              role="alert"
-              className="mt-4 flex items-start justify-between gap-3 rounded-lg border border-red-300 bg-red-50 px-3.5 py-3 text-[13px] text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200"
-            >
-              <span>{error}</span>
-              <button
-                type="button"
-                onClick={() => setError(null)}
-                aria-label="Dismiss error"
-                className="shrink-0 rounded px-1.5 font-semibold leading-none hover:bg-red-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-700 dark:hover:bg-red-900/50 dark:focus-visible:outline-red-300"
-              >
-                ✕
-              </button>
-            </div>
-          ) : null}
+          {/* The state strip */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 pb-2 text-[11px] sm:px-6">
+            <span className="text-ink-faint">
+              updates:{' '}
+              <span className={liveMode ? 'text-accent' : 'text-ink-muted'}>
+                {liveMode
+                  ? 'live, over the socket'
+                  : liveStatus === 'reconnecting'
+                    ? 'reconnecting…'
+                    : liveStatus === 'offline'
+                      ? 'socket unavailable — one request at a time'
+                      : 'one request at a time'}
+              </span>
+            </span>
+            {healthError ? (
+              <span className="text-bad">API unreachable: {healthError}</span>
+            ) : health ? (
+              <>
+                <span className="text-ink-faint">MCP {health.mcp?.protocolVersion ?? '—'}</span>
+                <span className={aiEnabled ? 'text-ink-faint' : 'text-warn'}>
+                  {aiEnabled ? `AI: ${health.ai?.provider ?? 'enabled'}` : 'AI not configured'}
+                </span>
+                <span className="text-ink-faint">{toolCount} tools</span>
+              </>
+            ) : (
+              <span className="text-ink-faint">connecting…</span>
+            )}
+          </div>
+        </header>
 
-          {/* Demo mode banner */}
-          {!aiEnabled && health && !healthError ? (
-            <DemoBanner onStart={startDemo} busy={busy} />
-          ) : null}
-
-          {/* Empty state. When the AI provider is off, the demo banner above
-              already explains the situation and offers the demo; a second
-              card of prompts that can only replay that same demo would just
-              be noise. */}
-          {!hasRuns && (aiEnabled || !health) ? (
-            <EmptyState
-              aiEnabled={aiEnabled}
-              onDemo={startDemo}
-              onPick={(text) => setInput(text)}
+        {/* ------------------------------------------------------------- */}
+        {/* The content                                                     */}
+        {/* ------------------------------------------------------------- */}
+        <main id="timeline" className="min-w-0 flex-1 px-4 py-5 sm:px-6">
+          {view === 'policies' ? (
+            <PoliciesView
+              policies={policies}
+              tools={tools}
+              available={policiesAvailable}
+              sessionId={sessionId}
+              onCreate={createPolicyAction}
+              onUpdate={updatePolicyAction}
+              onDelete={deletePolicyAction}
+              onBack={() => setView('timeline')}
             />
-          ) : null}
-          {/* The runs */}
-          {hasRuns ? (
-            <div className="mt-6 space-y-10">
-              {runs.map((run) => (
-                <RunView
-                  key={run.id}
-                  run={run}
-                  destructiveTools={destructiveTools}
-                  busy={busy}
-                  onApprove={run.demo ? demoApprove : approve}
-                  onReject={run.demo ? demoReject : reject}
+          ) : (
+            <div className="mx-auto max-w-3xl">
+              {/* The MCP evidence, on demand. */}
+              {mcpOpen ? (
+                <div className="mb-6">
+                  <McpDetails
+                    session={mcpSession}
+                    health={health}
+                    onReconnect={reconnectMcp}
+                  />
+                </div>
+              ) : null}
+
+              {/* The live region: the one thing a screen reader must not
+                  miss is that the agent is waiting for an answer. */}
+              <p className="sr-only" role="status" aria-live="polite">
+                {runs.find((run) => run.pending)
+                  ? `The agent needs permission to run ${runs.find((run) => run.pending)?.pending?.name ?? 'a tool'}.`
+                  : ''}
+              </p>
+
+              {/* The error banner */}
+              {error ? (
+                <div
+                  role="alert"
+                  className="mb-4 flex items-start justify-between gap-3 rounded-lg border border-bad-line bg-bad-soft px-3.5 py-3 text-[13px] text-bad"
+                >
+                  <span>{error}</span>
+                  <button
+                    type="button"
+                    onClick={() => setError(null)}
+                    aria-label="Dismiss error"
+                    className="shrink-0 rounded px-1 font-semibold leading-none transition-colors duration-150 hover:brightness-125 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ) : null}
+
+              {/* The demo banner */}
+              {!aiEnabled && health && !healthError ? (
+                <DemoBanner onStart={startDemo} busy={busy} />
+              ) : null}
+
+              {/* The empty state. When the AI provider is off, the demo
+                  banner above already explains the situation and offers the
+                  demo; a second card of prompts that can only replay that
+                  same demo would just be noise. */}
+              {!hasRuns && (aiEnabled || !health) ? (
+                <EmptyState
+                  aiEnabled={aiEnabled}
+                  onDemo={startDemo}
+                  onPick={(text) => setInput(text)}
                 />
-              ))}
+              ) : null}
+
+              {/* The runs */}
+              {hasRuns ? (
+                <div className="space-y-10">
+                  {runs.map((run) => (
+                    <RunView
+                      key={run.id}
+                      run={run}
+                      tools={tools}
+                      destructiveTools={destructiveTools}
+                      busy={busy || decisionsInFlight.length > 0}
+                      live={liveMode}
+                      onApprove={run.demo ? demoApprove : approve}
+                      onReject={run.demo ? demoReject : reject}
+                      onAllowAndRemember={allowAndRemember}
+                      onAnswer={answer}
+                    />
+                  ))}
+                </div>
+              ) : null}
+
+              <RunHistoryPanel />
+
+              <div ref={endRef} />
             </div>
-          ) : null}
-
-          <RunHistoryPanel />
-
-          <div ref={endRef} />
-
-          {/* Composer */}
-          <form
-            onSubmit={submit}
-            className="sticky bottom-0 mt-6 flex gap-2 bg-neutral-50/95 pb-2 pt-3 backdrop-blur-sm dark:bg-neutral-950/95"
-          >
-            <label htmlFor="composer" className="sr-only">
-              Ask Muca to do something
-            </label>
-            <input
-              id="composer"
-              ref={inputRef}
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              placeholder={
-                aiEnabled
-                  ? 'Ask Muca to triage a failure…'
-                  : 'The AI provider is not configured — use demo mode'
-              }
-              disabled={busy || !aiEnabled}
-              autoComplete="off"
-              className="min-w-0 flex-1 rounded-lg border border-neutral-300 bg-white px-3.5 py-2.5 text-[14px] text-neutral-900 outline-none transition placeholder:text-neutral-400 focus:border-neutral-500 disabled:opacity-60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:border-neutral-500"
-            />
-            <button
-              type="submit"
-              disabled={busy || !aiEnabled || !input.trim()}
-              className="shrink-0 rounded-lg bg-neutral-900 px-4 py-2.5 text-[13px] font-semibold text-white transition hover:bg-neutral-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-900 disabled:opacity-40 dark:bg-neutral-50 dark:text-neutral-900 dark:hover:bg-neutral-200 dark:focus-visible:outline-neutral-50"
-            >
-              {busy ? 'Working…' : 'Send'}
-            </button>
-          </form>
+          )}
         </main>
 
         {/* ------------------------------------------------------------- */}
-        {/* Side column: the MCP handshake                                  */}
+        {/* The composer                                                     */}
         {/* ------------------------------------------------------------- */}
-        <aside className="w-full shrink-0 lg:w-96">
-          <div className="lg:sticky lg:top-6">
-            <McpPanel health={health} onSessionChange={setMcpSession} />
-          </div>
-        </aside>
+        {view === 'timeline' ? (
+          <form
+            onSubmit={submit}
+            className="sticky bottom-0 border-t border-line bg-surface/90 px-4 py-3 backdrop-blur-md sm:px-6"
+          >
+            <div className="mx-auto flex max-w-3xl gap-2">
+              <label htmlFor="composer" className="sr-only">
+                Ask Muca to do something
+              </label>
+              <input
+                id="composer"
+                name="message"
+                ref={inputRef}
+                value={input}
+                onChange={(event) => setInput(event.target.value)}
+                placeholder={
+                  aiEnabled
+                    ? 'Ask Muca to triage a failure…'
+                    : 'The AI provider is not configured — use demo mode'
+                }
+                disabled={busy || !aiEnabled}
+                autoComplete="off"
+                className="min-w-0 flex-1 rounded-lg border border-line bg-surface-raised px-3.5 py-2.5 text-[14px] text-ink transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent placeholder:text-ink-faint focus:border-accent disabled:opacity-60"
+              />
+              <button
+                type="submit"
+                disabled={busy || !aiEnabled || !input.trim()}
+                className="shrink-0 rounded-lg bg-accent px-4 py-2.5 text-[13px] font-semibold text-surface transition-[filter,transform,opacity] duration-150 ease-out hover:brightness-110 active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-40"
+              >
+                {busy ? 'Working…' : 'Send'}
+              </button>
+            </div>
+          </form>
+        ) : null}
       </div>
+
+      <HelpPanel
+        open={helpOpen}
+        onClose={() => setHelpOpen(false)}
+        tools={tools}
+        liveMode={liveMode}
+      />
     </div>
   );
+}
+
+/** The tools the server marked destructive, for the timeline badges. */
+function useDestructiveTools(
+  health: HealthResponse | null,
+  mcpTools: { name: string; destructive: boolean }[],
+): Set<string> {
+  return useMemo(() => {
+    const names = new Set<string>();
+    for (const tool of health?.tools ?? []) {
+      if (tool?.destructive) names.add(tool.name);
+    }
+    // The MCP catalogue is the source of truth; `/health` can lag behind it.
+    for (const tool of mcpTools) {
+      if (tool?.destructive) names.add(tool.name);
+    }
+    return names;
+  }, [health, mcpTools]);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -542,16 +1063,24 @@ export default function Home() {
 
 function RunView({
   run,
+  tools,
   destructiveTools,
   busy,
+  live,
   onApprove,
   onReject,
+  onAllowAndRemember,
+  onAnswer,
 }: {
   run: Run;
+  tools: ToolSummary[];
   destructiveTools: Set<string>;
   busy: boolean;
+  live: boolean;
   onApprove: (pending: PendingCall) => void;
   onReject: (pending: PendingCall) => void;
+  onAllowAndRemember: (pending: PendingCall) => void;
+  onAnswer?: (requestId: string, answer: string) => void;
 }) {
   const timeline = useMemo(
     () =>
@@ -565,6 +1094,7 @@ function RunView({
         awaitingConfirmation: run.awaitingConfirmation,
         runId: run.runId,
         destructiveTools,
+        inFlightCallIds: run.openCallId ? [run.openCallId] : [],
         unknownEvents: run.unknownEvents,
       }),
     [run, destructiveTools],
@@ -573,67 +1103,74 @@ function RunView({
   /** Attach the artifact cards to the evidence steps. */
   const artifactsByStep = useMemo(() => {
     const map = new Map<string, Artifact[]>();
-    for (const [index, event] of run.events.entries()) {
-      if (event.type !== 'tool_result') continue;
+    for (const step of timeline.steps) {
+      if (step.kind !== 'evidence') continue;
       const artifact = buildArtifact({
-        id: `${run.id}-artifact-${index}`,
-        toolName: event.name,
-        data: event.data,
+        id: step.id,
+        toolName: step.toolName ?? '',
+        data: step.data,
       });
-      if (!artifact) continue;
-      const stepId = `s-evidence-${event.id || index}`;
-      const list = map.get(stepId) ?? [];
-      list.push(artifact);
-      map.set(stepId, list);
+      if (artifact) map.set(step.id, [artifact]);
     }
     return map;
-  }, [run.events, run.id]);
+  }, [timeline.steps]);
 
   return (
-    <section aria-label="Run">
-      {/* The request — the loudest thing in the run. */}
-      <div className="border-l-2 border-neutral-900 pl-4 dark:border-neutral-100">
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+    <section aria-label={run.request || 'A run'}>
+      {/* The request */}
+      <div className="flex items-start gap-2.5">
+        <span
+          aria-hidden="true"
+          className="mt-2 h-full w-px shrink-0 bg-line"
+        />
+        <div className="min-w-0 flex-1">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-ink-faint">
             Request
-          </h2>
-          {run.demo ? (
-            <span className="rounded-full border border-amber-400 bg-amber-50 px-2 py-px text-[10px] font-bold uppercase tracking-wide text-amber-800 dark:border-amber-700 dark:bg-amber-950/50 dark:text-amber-200">
-              demo — scripted, not a live run
-            </span>
-          ) : null}
-          {run.runId ? (
-            <code className="font-mono text-[10px] text-neutral-400 dark:text-neutral-500">
-              {run.runId}
-            </code>
-          ) : null}
+            {run.runId ? (
+              <span className="ml-2 font-mono font-normal normal-case tracking-normal">
+                {run.runId}
+              </span>
+            ) : null}
+            {run.demo ? (
+              <span className="ml-2 rounded border border-warn-line bg-warn-soft px-1.5 py-px font-semibold uppercase tracking-wide text-warn">
+                demo — scripted, not a live run
+              </span>
+            ) : null}
+          </p>
+          <p className="mt-1 text-[15px] font-medium leading-relaxed text-ink">
+            {run.request}
+          </p>
         </div>
-        <p className="mt-1.5 text-[15px] font-medium leading-relaxed text-neutral-900 dark:text-neutral-100">
-          {run.request}
-        </p>
       </div>
 
       {/* The timeline */}
-      <div className="mt-6">
-        <h2 className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-          Timeline
-        </h2>
-        <div className="mt-3">
-          <TimelineView
-            steps={timeline.steps}
-            artifactsByStep={artifactsByStep}
-            outcome={timeline.outcome}
-            pending={run.pending}
-            busy={busy}
-            onApprove={onApprove}
-            onReject={onReject}
-            demo={run.demo}
-          />
-        </div>
+      <div className="mt-4">
+        {run.thinking ? (
+          <div className="mb-3">
+            <ThinkingRow
+              text={run.thinking}
+              active={run.thinkingActive === true}
+            />
+          </div>
+        ) : null}
+        <TimelineView
+          steps={timeline.steps}
+          artifactsByStep={artifactsByStep}
+          outcome={timeline.outcome}
+          pending={run.pending}
+          tools={tools}
+          busy={busy}
+          live={live}
+          onApprove={onApprove}
+          onReject={onReject}
+          onAllowAndRemember={onAllowAndRemember}
+          onAnswer={onAnswer}
+          demo={run.demo}
+        />
       </div>
 
       {run.declined ? (
-        <p className="mt-2 rounded-lg border border-neutral-200 bg-neutral-100 px-3.5 py-2.5 text-[12px] text-neutral-600 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400">
+        <p className="mt-2 rounded-lg border border-line bg-surface-raised px-3.5 py-2.5 text-[12px] text-ink-muted">
           You declined that action. Nothing was run.
         </p>
       ) : null}
@@ -648,23 +1185,25 @@ function TaskStatus({ status }: { status: TaskSnapshot }) {
   const terminal = isTerminalTaskStatus(status.status);
   const tone = terminal
     ? status.status === 'failed'
-      ? 'border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200'
-      : 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200'
-    : 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200';
+      ? 'border-bad-line bg-bad-soft text-bad'
+      : 'border-good-line bg-good-soft text-good'
+    : 'border-warn-line bg-warn-soft text-warn';
 
   return (
     <p
       aria-live="polite"
       className={`mt-3 rounded-lg border px-3.5 py-2.5 text-[12px] ${tone}`}
     >
-      <span className="font-semibold uppercase tracking-wider">
+      <span className="font-semibold uppercase tracking-[0.12em]">
         Task {status.status ?? 'unknown'}
       </span>
       {status.statusMessage ? (
         <span className="ml-2">{status.statusMessage}</span>
       ) : null}
       {status.taskId ? (
-        <code className="ml-2 font-mono text-[11px] opacity-80">{status.taskId}</code>
+        <code className="ml-2 font-mono text-[11px] opacity-80">
+          {status.taskId}
+        </code>
       ) : null}
     </p>
   );
@@ -674,64 +1213,30 @@ function TaskStatus({ status }: { status: TaskSnapshot }) {
 /* Small pieces                                                                */
 /* -------------------------------------------------------------------------- */
 
-function Chip({
-  tone,
-  children,
-}: {
-  tone: 'neutral' | 'success' | 'warn' | 'failed';
-  children: React.ReactNode;
-}) {
-  const tones = {
-    neutral:
-      'border-neutral-300 text-neutral-600 dark:border-neutral-700 dark:text-neutral-400',
-    success:
-      'border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300',
-    warn: 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300',
-    failed:
-      'border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300',
-  } as const;
-
+function DemoBanner({ onStart, busy }: { onStart: () => void; busy: boolean }) {
   return (
-    <span
-      className={`rounded-full border px-2.5 py-0.5 font-medium ${tones[tone]}`}
-    >
-      {children}
-    </span>
-  );
-}
-
-function DemoBanner({
-  onStart,
-  busy,
-}: {
-  onStart: () => void;
-  busy: boolean;
-}) {
-  return (
-    <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50/70 p-4 dark:border-amber-700 dark:bg-amber-950/25">
-      <div className="flex flex-wrap items-baseline gap-2">
-        <span className="rounded border border-amber-400 bg-amber-100 px-1.5 py-px text-[10px] font-bold uppercase tracking-wider text-amber-800 dark:border-amber-700 dark:bg-amber-900/50 dark:text-amber-200">
-          Demo mode
-        </span>
-        <h2 className="text-[14px] font-semibold text-amber-950 dark:text-amber-100">
-          The AI provider is not configured
-        </h2>
-      </div>
-      <p className="mt-1.5 text-[13px] leading-relaxed text-amber-900/90 dark:text-amber-100/90">
-        No API key, so the agent itself cannot run. Everything else is live:
-        the MCP session, the tool catalogue and the raw JSON-RPC traffic on
-        the right are real. The demo below replays a scripted triage run
+    <section className="mb-6 rounded-xl border border-warn-line bg-warn-soft p-4">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-warn">
+        Demo mode
+      </p>
+      <h2 className="mt-1 text-[15px] font-semibold text-ink">
+        The AI provider is not configured
+      </h2>
+      <p className="mt-1.5 max-w-2xl text-[13px] leading-relaxed text-ink-muted">
+        No API key, so the agent itself cannot run. Everything else is
+        live: the MCP session, the tool catalogue and the raw JSON-RPC
+        traffic are real. The demo below replays a scripted triage run
         through the same timeline, including the approval gate.
       </p>
       <button
         type="button"
         onClick={onStart}
         disabled={busy}
-        className="mt-3 rounded-lg bg-amber-600 px-3.5 py-2 text-[13px] font-semibold text-white transition hover:bg-amber-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-700 disabled:opacity-50 dark:focus-visible:outline-amber-400"
+        className="mt-3 inline-flex items-center gap-2 rounded-lg bg-warn px-3.5 py-2 text-[13px] font-semibold text-surface transition-[filter,transform,opacity] duration-150 ease-out hover:brightness-110 active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50"
       >
         Run the demo
       </button>
-    </div>
+    </section>
   );
 }
 
@@ -751,11 +1256,11 @@ function EmptyState({
   ];
 
   return (
-    <div className="mt-6 rounded-xl border border-dashed border-neutral-300 p-5 dark:border-neutral-800">
-      <h2 className="text-[13px] font-semibold text-neutral-900 dark:text-neutral-100">
+    <div className="mt-6 rounded-xl border border-dashed border-line p-5">
+      <h2 className="text-[13px] font-semibold text-ink">
         {aiEnabled ? 'Try a run' : 'See how a run works'}
       </h2>
-      <p className="mt-1 text-[13px] leading-relaxed text-neutral-600 dark:text-neutral-400">
+      <p className="mt-1 text-[13px] leading-relaxed text-ink-muted">
         {aiEnabled
           ? 'Muca will show every tool call, the evidence it found and the outcome as a timeline.'
           : 'The demo replays a scripted triage run so you can see the timeline, the evidence cards and the approval gate.'}
@@ -767,7 +1272,7 @@ function EmptyState({
             <button
               type="button"
               onClick={() => (aiEnabled ? onPick(prompt) : onDemo())}
-              className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-left text-[13px] text-neutral-700 transition hover:border-neutral-400 hover:text-neutral-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-900 dark:border-neutral-800 dark:bg-neutral-900/50 dark:text-neutral-300 dark:hover:border-neutral-600 dark:hover:text-neutral-100 dark:focus-visible:outline-neutral-50"
+              className="w-full rounded-lg border border-line bg-surface-raised px-3 py-2 text-left text-[13px] text-ink-muted transition-[background-color,color,transform] duration-150 ease-out hover:bg-surface-hover hover:text-ink active:scale-[0.99] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
               {prompt}
             </button>
@@ -778,13 +1283,13 @@ function EmptyState({
       {/* The demo is always one click away, so a judge can see the flow
           even when a real key is configured. */}
       {aiEnabled ? (
-        <div className="mt-4 border-t border-neutral-200 pt-3 dark:border-neutral-800">
+        <div className="mt-4 border-t border-line pt-3">
           <button
             type="button"
             onClick={onDemo}
-            className="inline-flex items-center gap-2 rounded-lg border border-amber-400 bg-amber-50 px-3 py-1.5 text-[13px] font-medium text-amber-900 transition hover:bg-amber-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-700 dark:bg-amber-950/30 dark:text-amber-100 dark:hover:bg-amber-900/40 dark:focus-visible:outline-amber-400"
+            className="inline-flex items-center gap-2 rounded-lg border border-warn-line bg-warn-soft px-3 py-1.5 text-[13px] font-medium text-ink transition-[background-color,transform] duration-150 ease-out hover:bg-warn/20 active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
-            <span className="rounded border border-amber-400 bg-amber-100 px-1.5 py-px text-[10px] font-bold uppercase tracking-wider text-amber-800 dark:border-amber-700 dark:bg-amber-900/50 dark:text-amber-200">
+            <span className="rounded border border-warn-line bg-warn/20 px-1.5 py-px text-[10px] font-bold uppercase tracking-wider text-warn">
               demo
             </span>
             Replay a scripted run (no API key needed)

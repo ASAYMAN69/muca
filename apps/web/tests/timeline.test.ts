@@ -88,6 +88,74 @@ function rowsFor(timeline: { steps: TimelineStep[] }, callId: string) {
   return timeline.steps.filter((step) => step.callId === callId);
 }
 
+describe('buildTimeline — a question', () => {
+  it('shows the question and resolves it when it is answered', () => {
+    const { events } = parseAgentEvents([
+      {
+        type: 'clarification',
+        id: 'req_2',
+        question: 'Which environment?',
+        options: ['prod', 'staging'],
+      },
+    ]);
+
+    const waiting = buildTimeline({ events, destructiveTools: DESTRUCTIVE });
+    expect(waiting.steps).toHaveLength(1);
+    expect(waiting.steps[0].kind).toBe('clarification');
+    expect(waiting.steps[0].status).toBe('blocked');
+    expect(waiting.steps[0].clarification?.question).toBe('Which environment?');
+
+    const answered = buildTimeline({
+      events: [
+        ...events,
+        { type: 'clarification_answered', id: 'req_2', answer: 'prod' },
+      ],
+      destructiveTools: DESTRUCTIVE,
+    });
+    expect(answered.steps).toHaveLength(1);
+    expect(answered.steps[0].status).toBe('success');
+    expect(answered.steps[0].clarification?.answer).toBe('prod');
+  });
+});
+
+describe('buildTimeline — the permission details', () => {
+  it('carries the tool description and the reason onto the row', () => {
+    const { events } = parseAgentEvents([
+      {
+        type: 'tool_call',
+        id: 'call_1',
+        name: 'create_branch',
+        arguments: { name: 'fix/x' },
+      },
+      {
+        type: 'confirmation_required',
+        id: 'call_1',
+        name: 'create_branch',
+        arguments: { name: 'fix/x' },
+        message: 'Create a branch',
+        title: 'Create a branch',
+        description: 'Creates a branch on the remote.',
+        reason: 'no policy matched, and this tool writes',
+        matchedPolicy: null,
+      },
+    ]);
+
+    const timeline = buildTimeline({
+      events,
+      pendingCall: PENDING,
+      awaitingConfirmation: true,
+      destructiveTools: DESTRUCTIVE,
+    });
+
+    expect(timeline.steps[0].permission).toEqual({
+      title: 'Create a branch',
+      description: 'Creates a branch on the remote.',
+      reason: 'no policy matched, and this tool writes',
+      matchedPolicy: null,
+    });
+  });
+});
+
 describe('buildTimeline — a parked run', () => {
   it('shows one row for the tool call, waiting for the user', () => {
     const { events } = parseAgentEvents(parkedEvents());
@@ -308,6 +376,25 @@ describe('buildTimeline — ordinary calls', () => {
     expect(timeline.steps).toHaveLength(1);
     expect(timeline.steps[0].status).toBe('failed');
     expect(timeline.steps[0].summary).toMatch(/did not return a result/i);
+  });
+
+  it('keeps a call that is still running as running', () => {
+    const { events } = parseAgentEvents([
+      {
+        type: 'tool_call',
+        id: 'call_1',
+        name: 'list_deployments',
+        arguments: {},
+      },
+    ]);
+    const timeline = buildTimeline({
+      events,
+      inFlightCallIds: ['call_1'],
+      destructiveTools: DESTRUCTIVE,
+    });
+
+    expect(timeline.steps).toHaveLength(1);
+    expect(timeline.steps[0].status).toBe('running');
   });
 });
 

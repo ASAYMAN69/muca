@@ -2,138 +2,176 @@
 
 import { useId, useState } from 'react';
 
-import type { PendingCall } from '../../lib/api';
+import type { PendingCall, ToolSummary } from '../../lib/api';
 import type { TimelineStep } from '../../lib/timeline';
 import { ArtifactCard } from './artifact-card';
 import type { Artifact } from '../../lib/artifacts';
 import { renderMarkdown } from '../../lib/markdown';
+import { PermissionCard } from './permission-card';
 
 const STEP_TONE: Record<
   TimelineStep['status'],
   { dot: string; ring: string; label: string }
 > = {
   pending: {
-    dot: 'bg-neutral-300 dark:bg-neutral-600',
-    ring: 'ring-neutral-200 dark:ring-neutral-800',
+    dot: 'bg-ink-faint',
+    ring: 'ring-line',
     label: 'pending',
   },
   running: {
-    dot: 'bg-amber-500 motion-safe:animate-pulse',
-    ring: 'ring-amber-200 dark:ring-amber-900',
+    dot: 'bg-accent motion-safe:animate-pulse',
+    ring: 'ring-accent-line',
     label: 'running',
   },
   success: {
-    dot: 'bg-emerald-500',
-    ring: 'ring-emerald-200 dark:ring-emerald-900',
+    dot: 'bg-good',
+    ring: 'ring-good-line',
     label: 'ok',
   },
   failed: {
-    dot: 'bg-red-500',
-    ring: 'ring-red-200 dark:ring-red-900',
+    dot: 'bg-bad',
+    ring: 'ring-bad-line',
     label: 'failed',
   },
   blocked: {
-    dot: 'bg-amber-500',
-    ring: 'ring-amber-200 dark:ring-amber-900',
+    dot: 'bg-warn motion-safe:animate-pulse',
+    ring: 'ring-warn-line',
     label: 'waiting',
   },
   rejected: {
-    dot: 'bg-neutral-400',
-    ring: 'ring-neutral-200 dark:ring-neutral-800',
+    dot: 'bg-ink-faint',
+    ring: 'ring-line',
     label: 'declined',
   },
 };
 
-/** The approval prompt. Deliberate, explicit, and keyboard-operable. */
+/** The permission card. The decision happens here, in the timeline. */
 function ApprovalStep({
   step,
   pending,
+  tools,
   busy,
+  live,
   onApprove,
   onReject,
+  onAllowAndRemember,
 }: {
   step: TimelineStep;
   pending: PendingCall | null;
+  tools: ToolSummary[];
   busy: boolean;
+  live: boolean;
   onApprove: (pending: PendingCall) => void;
   onReject: (pending: PendingCall) => void;
+  onAllowAndRemember: (pending: PendingCall) => void;
 }) {
-  const argsId = useId();
-  const live = pending && pending.callId === step.callId;
+  const live_ = pending && pending.callId === step.callId;
+
+  if (!live_) {
+    return (
+      <p className="text-[12px] italic text-ink-faint">
+        This approval was already answered.
+      </p>
+    );
+  }
 
   return (
-    <div className="rounded-lg border border-amber-300 bg-amber-50/70 dark:border-amber-700 dark:bg-amber-950/25">
-      <div className="flex flex-wrap items-center gap-2 border-b border-amber-200 px-3.5 py-2.5 dark:border-amber-800/60">
-        <span className="rounded border border-amber-400 bg-amber-100 px-1.5 py-px text-[10px] font-bold uppercase tracking-wider text-amber-800 dark:border-amber-700 dark:bg-amber-900/50 dark:text-amber-200">
-          Consequential
-        </span>
-        <span className="text-[13px] font-semibold text-amber-950 dark:text-amber-100">
-          Approval required
-        </span>
-      </div>
-
-      <div className="space-y-3 px-3.5 py-3">
-        <p className="text-[13px] leading-relaxed text-amber-900 dark:text-amber-100">
-          {step.summary ?? pending?.message ?? 'The agent wants to run a tool.'}
+    <>
+      <PermissionCard
+        pending={pending}
+        tools={tools}
+        busy={busy}
+        onAllow={onApprove}
+        onDeny={onReject}
+        onAllowAndRemember={onAllowAndRemember}
+      />
+      {live ? null : (
+        <p className="text-[11.5px] leading-relaxed text-ink-faint">
+          Live updates are off, so this decision is sent the slow way. “Allow
+          and remember” needs the live socket.
         </p>
+      )}
+    </>
+  );
+}
 
-        <div>
-          <h4
-            id={argsId}
-            className="text-[10px] font-semibold uppercase tracking-wider text-amber-700/80 dark:text-amber-300/80"
-          >
-            What will happen
-          </h4>
-          <dl
-            aria-labelledby={argsId}
-            className="mt-1.5 divide-y divide-amber-200/70 rounded-md border border-amber-200 bg-white/60 dark:divide-amber-800/60 dark:border-amber-800/60 dark:bg-neutral-950/25"
-          >
-            {(step.arguments ?? []).map((arg) => (
-              <div
-                key={arg.key}
-                className="flex flex-wrap items-baseline gap-x-2 px-2.5 py-1.5"
-              >
-                <dt className="font-mono text-[11px] text-amber-700/90 dark:text-amber-300/80">
-                  {arg.key}
-                </dt>
-                <dd className="min-w-0 flex-1 break-words font-mono text-[11px] text-amber-950 dark:text-amber-100">
-                  {arg.value}
-                </dd>
-              </div>
-            ))}
-          </dl>
+/** A question the agent asked. */
+function ClarificationStep({
+  step,
+  busy,
+  onAnswer,
+}: {
+  step: TimelineStep;
+  busy: boolean;
+  onAnswer?: (requestId: string, answer: string) => void;
+}) {
+  const [answer, setAnswer] = useState('');
+  const id = useId();
+  const question = step.clarification?.question ?? step.summary ?? '';
+  const answered = step.clarification?.answer;
+
+  if (answered !== undefined) {
+    return (
+      <div className="rounded-lg border border-line bg-surface-raised px-3.5 py-3">
+        <p className="text-[13px] leading-relaxed text-ink">{question}</p>
+        <p className="mt-1.5 text-[12.5px] leading-relaxed text-ink-muted">
+          You said: {answered}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <form
+      className="rounded-lg border border-line bg-surface-raised px-3.5 py-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const text = answer.trim();
+        if (!text || !step.callId) return;
+        onAnswer?.(step.callId, text);
+        setAnswer('');
+      }}
+    >
+      <p className="text-[13px] leading-relaxed text-ink">{question}</p>
+      {step.clarification?.options?.length ? (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {step.clarification.options.map((option) => (
+            <button
+              key={option}
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                if (!step.callId) return;
+                onAnswer?.(step.callId, option);
+              }}
+              className="rounded-lg border border-line px-2.5 py-1 text-[12px] text-ink-muted transition-[background-color,color,transform] duration-150 ease-out hover:bg-surface-hover hover:text-ink active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50"
+            >
+              {option}
+            </button>
+          ))}
         </div>
-
-        <p className="text-[12px] leading-relaxed text-amber-800/90 dark:text-amber-200/80">
-          This changes something outside Muca. It only runs if you approve it.
-        </p>
-
-        {live ? (
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => pending && onApprove(pending)}
-              disabled={busy}
-              className="rounded-md bg-amber-600 px-3 py-1.5 text-[13px] font-semibold text-white transition hover:bg-amber-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-700 disabled:opacity-50 dark:focus-visible:outline-amber-400"
-            >
-              {busy ? 'Running…' : 'Approve & run'}
-            </button>
-            <button
-              type="button"
-              onClick={() => pending && onReject(pending)}
-              disabled={busy}
-              className="rounded-md border border-amber-400 px-3 py-1.5 text-[13px] font-medium text-amber-900 transition hover:bg-amber-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-700 disabled:opacity-50 dark:text-amber-100 dark:hover:bg-amber-900/40 dark:focus-visible:outline-amber-400"
-            >
-              Cancel
-            </button>
-          </div>
-        ) : (
-          <p className="text-[12px] italic text-amber-700/80 dark:text-amber-300/70">
-            This approval was already answered.
-          </p>
-        )}
+      ) : null}
+      <div className="mt-2.5 flex gap-2">
+        <label htmlFor={id} className="sr-only">
+          Your answer
+        </label>
+        <input
+          id={id}
+          value={answer}
+          onChange={(event) => setAnswer(event.target.value)}
+          placeholder="Type your answer…"
+          autoComplete="off"
+          className="min-w-0 flex-1 rounded-lg border border-line bg-surface-sunken px-2.5 py-1.5 text-[13px] text-ink transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent placeholder:text-ink-faint focus:border-accent"
+        />
+        <button
+          type="submit"
+          disabled={busy || !answer.trim()}
+          className="rounded-lg bg-accent px-3 py-1.5 text-[12.5px] font-semibold text-surface transition-[filter,transform,opacity] duration-150 ease-out hover:brightness-110 active:scale-[0.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50"
+        >
+          Answer
+        </button>
       </div>
-    </div>
+    </form>
   );
 }
 
@@ -142,19 +180,28 @@ function Step({
   step,
   artifacts,
   pending,
+  tools,
   busy,
+  live,
   onApprove,
   onReject,
+  onAllowAndRemember,
+  onAnswer,
 }: {
   step: TimelineStep;
   artifacts: Artifact[];
   pending: PendingCall | null;
+  tools: ToolSummary[];
   busy: boolean;
+  live: boolean;
   onApprove: (pending: PendingCall) => void;
   onReject: (pending: PendingCall) => void;
+  onAllowAndRemember: (pending: PendingCall) => void;
+  onAnswer?: (requestId: string, answer: string) => void;
 }) {
   const tone = STEP_TONE[step.status];
   const isApproval = step.kind === 'approval';
+  const isClarification = step.kind === 'clarification';
 
   return (
     <li className="relative pl-7">
@@ -169,29 +216,31 @@ function Step({
           <h3
             className={`text-[13px] font-semibold ${
               isApproval
-                ? 'text-amber-950 dark:text-amber-100'
-                : 'text-neutral-900 dark:text-neutral-100'
+                ? 'text-ink'
+                : isClarification
+                  ? 'text-ink'
+                  : 'text-ink'
             }`}
           >
             {step.title}
           </h3>
           {step.toolName ? (
-            <code className="rounded bg-neutral-100 px-1.5 py-px font-mono text-[11px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400">
+            <code className="rounded bg-surface-sunken px-1.5 py-px font-mono text-[11px] text-ink-muted">
               {step.toolName}
             </code>
           ) : null}
           {step.destructive ? (
-            <span className="rounded-full border border-red-300 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-red-700 dark:border-red-800 dark:text-red-300">
+            <span className="rounded-full border border-warn-line px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-warn">
               destructive
             </span>
           ) : null}
-          <span className="text-[10px] uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
+          <span className="text-[10px] uppercase tracking-[0.12em] text-ink-faint">
             {tone.label}
           </span>
         </div>
 
-        {step.summary && step.kind !== 'approval' ? (
-          <p className="mt-1 text-[12px] leading-relaxed text-neutral-600 dark:text-neutral-400">
+        {step.summary && step.kind !== 'approval' && !isClarification ? (
+          <p className="mt-1 text-[12px] leading-relaxed text-ink-muted">
             {step.summary}
           </p>
         ) : null}
@@ -201,30 +250,45 @@ function Step({
           (step.kind === 'approval' && step.status !== 'blocked')) ? (
           <ArgumentList step={step} />
         ) : null}
+
         {/* When an artifact card covers the result, the raw summary would
             say the same thing twice. The card wins. */}
         {step.kind === 'evidence' && step.resultSummary && artifacts.length === 0 ? (
-          <p className="mt-1.5 whitespace-pre-wrap text-[12px] leading-relaxed text-neutral-700 dark:text-neutral-300">
+          <p className="mt-1.5 whitespace-pre-wrap text-[12px] leading-relaxed text-ink-muted">
             {step.resultSummary}
           </p>
         ) : null}
+
         {step.kind === 'error' ? (
           <p
             role="alert"
-            className="mt-1.5 rounded-md border border-red-200 bg-red-50 px-2.5 py-2 text-[12px] leading-relaxed text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200"
+            className="mt-1.5 rounded-lg border border-bad-line bg-bad-soft px-2.5 py-2 text-[12px] leading-relaxed text-bad"
           >
             {step.summary}
           </p>
         ) : null}
 
-        {isApproval && step.status === 'blocked' ? (
+        {isApproval && step.status === 'blocked' && pending ? (
           <div className="mt-2.5">
             <ApprovalStep
               step={step}
               pending={pending}
+              tools={tools}
               busy={busy}
+              live={live}
               onApprove={onApprove}
               onReject={onReject}
+              onAllowAndRemember={onAllowAndRemember}
+            />
+          </div>
+        ) : null}
+
+        {isClarification ? (
+          <div className="mt-2.5">
+            <ClarificationStep
+              step={step}
+              busy={busy}
+              onAnswer={onAnswer}
             />
           </div>
         ) : null}
@@ -253,7 +317,7 @@ function ArgumentList({ step }: { step: TimelineStep }) {
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
         aria-controls={id}
-        className="inline-flex items-center gap-1.5 rounded text-[11px] font-medium text-neutral-500 transition hover:text-neutral-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100 dark:focus-visible:outline-neutral-100"
+        className="inline-flex items-center gap-1.5 rounded text-[11px] font-medium text-ink-faint transition-colors duration-150 hover:text-ink-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
         <span aria-hidden="true" className="text-[9px]">
           {open ? '▾' : '▸'}
@@ -263,14 +327,12 @@ function ArgumentList({ step }: { step: TimelineStep }) {
       {open ? (
         <dl
           id={id}
-          className="mt-1.5 divide-y divide-neutral-100 rounded-md border border-neutral-200 bg-neutral-50/60 dark:divide-neutral-800 dark:border-neutral-800 dark:bg-neutral-950/40"
+          className="mt-1.5 divide-y divide-line overflow-hidden rounded-lg border border-line bg-surface-sunken"
         >
           {args.map((arg) => (
             <div key={arg.key} className="flex flex-wrap gap-x-2 px-2.5 py-1.5">
-              <dt className="font-mono text-[11px] text-neutral-500 dark:text-neutral-400">
-                {arg.key}
-              </dt>
-              <dd className="min-w-0 flex-1 break-words font-mono text-[11px] text-neutral-800 dark:text-neutral-200">
+              <dt className="font-mono text-[11px] text-ink-muted">{arg.key}</dt>
+              <dd className="min-w-0 flex-1 break-words font-mono text-[11px] text-ink">
                 {arg.value}
               </dd>
             </div>
@@ -292,18 +354,27 @@ export function TimelineView({
   artifactsByStep,
   outcome,
   pending,
+  tools,
   busy,
+  live,
   onApprove,
   onReject,
+  onAllowAndRemember,
+  onAnswer,
   demo,
 }: {
   steps: TimelineStep[];
   artifactsByStep: Map<string, Artifact[]>;
   outcome?: string;
   pending: PendingCall | null;
+  tools: ToolSummary[];
   busy: boolean;
+  /** True when the app is running on the live socket. */
+  live: boolean;
   onApprove: (pending: PendingCall) => void;
   onReject: (pending: PendingCall) => void;
+  onAllowAndRemember: (pending: PendingCall) => void;
+  onAnswer?: (requestId: string, answer: string) => void;
   demo?: boolean;
 }) {
   return (
@@ -313,7 +384,7 @@ export function TimelineView({
           {/* The vertical spine the step dots sit on. */}
           <span
             aria-hidden="true"
-            className="absolute left-[13px] top-2 bottom-2 w-px bg-neutral-200 dark:bg-neutral-800"
+            className="absolute left-[13px] top-2 bottom-2 w-px bg-line"
           />
           {steps.map((step) => (
             <Step
@@ -321,9 +392,13 @@ export function TimelineView({
               step={step}
               artifacts={artifactsByStep.get(step.id) ?? []}
               pending={pending}
+              tools={tools}
               busy={busy}
+              live={live}
               onApprove={onApprove}
               onReject={onReject}
+              onAllowAndRemember={onAllowAndRemember}
+              onAnswer={onAnswer}
             />
           ))}
         </ol>
@@ -334,17 +409,20 @@ export function TimelineView({
           aria-labelledby="outcome-heading"
           className={`rounded-xl border p-4 ${
             demo
-              ? 'border-dashed border-amber-400 bg-amber-50/50 dark:border-amber-700 dark:bg-amber-950/20'
-              : 'border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900/50'
+              ? 'border-dashed border-warn-line bg-warn-soft'
+              : 'border-line bg-surface-raised'
           }`}
         >
           <h3
             id="outcome-heading"
-            className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400"
+            className="text-[10px] font-semibold uppercase tracking-[0.12em] text-ink-faint"
           >
             Outcome
           </h3>
-          <div className="mt-2 space-y-2 text-[14px] leading-relaxed text-neutral-800 dark:text-neutral-200">
+          <div
+            aria-live="polite"
+            className="mt-2 space-y-2 text-[14px] leading-relaxed text-ink"
+          >
             {renderMarkdown(outcome)}
           </div>
         </section>

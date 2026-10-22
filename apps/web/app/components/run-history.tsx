@@ -3,26 +3,12 @@
 import { useEffect, useState } from 'react';
 
 import { fetchRuns, type RunRecord } from '../../lib/api';
-
-function formatWhen(iso: string | undefined): string {
-  if (!iso) return '';
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
+import { relativeTime } from '../../lib/format';
 
 const OUTCOME_TONE: Record<string, string> = {
-  completed:
-    'border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300',
-  awaiting_approval:
-    'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300',
-  error:
-    'border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300',
+  completed: 'border-good-line bg-good-soft text-good',
+  awaiting_approval: 'border-warn-line bg-warn-soft text-warn',
+  error: 'border-bad-line bg-bad-soft text-bad',
 };
 
 /**
@@ -54,10 +40,8 @@ export function RunHistoryPanel() {
 
   if (!loaded) {
     return (
-      <section className="mt-4 rounded-xl border border-neutral-200 bg-white/70 px-4 py-3 dark:border-neutral-800 dark:bg-neutral-900/50">
-        <p className="text-[12px] text-neutral-500 dark:text-neutral-400">
-          Loading run history…
-        </p>
+      <section className="mt-4 rounded-xl border border-line bg-surface-raised px-4 py-3">
+        <p className="text-[12px] text-ink-faint">Loading run history…</p>
       </section>
     );
   }
@@ -69,44 +53,47 @@ export function RunHistoryPanel() {
   return (
     <section
       aria-labelledby="run-history-heading"
-      className="mt-4 rounded-xl border border-neutral-200 bg-white/70 backdrop-blur-sm dark:border-neutral-800 dark:bg-neutral-900/50"
+      className="mt-4 rounded-xl border border-line bg-surface-raised"
     >
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
         aria-controls="run-history-body"
-        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-neutral-900 dark:focus-visible:outline-neutral-100"
+        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors duration-150 hover:bg-surface-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
       >
         <span>
           <span
             id="run-history-heading"
-            className="block text-[13px] font-semibold text-neutral-900 dark:text-neutral-100"
+            className="block text-[13px] font-semibold text-ink"
           >
             Previous runs
           </span>
-          <span className="block text-[11px] text-neutral-500 dark:text-neutral-400">
+          <span className="block text-[11px] text-ink-faint">
             {runs.length} run{runs.length === 1 ? '' : 's'} in this session
           </span>
         </span>
-        <span aria-hidden="true" className="text-[10px] text-neutral-400">
+        <span aria-hidden="true" className="text-[10px] text-ink-faint">
           {open ? '▾' : '▸'}
         </span>
       </button>
 
       {open ? (
-        <ul id="run-history-body" className="border-t border-neutral-200 dark:border-neutral-800">
+        <ul
+          id="run-history-body"
+          className="border-t border-line"
+        >
           {runs.map((run) => {
             const tone =
               OUTCOME_TONE[run.outcome ?? ''] ??
-              'border-neutral-300 text-neutral-600 dark:border-neutral-700 dark:text-neutral-400';
+              'border-line text-ink-muted';
             return (
               <li
                 key={run.id}
-                className="border-b border-neutral-100 px-4 py-2.5 last:border-b-0 dark:border-neutral-800"
+                className="border-b border-line px-4 py-2.5 last:border-b-0"
               >
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
-                  <p className="min-w-0 flex-1 truncate text-[12px] text-neutral-800 dark:text-neutral-200">
+                  <p className="min-w-0 flex-1 truncate text-[12px] text-ink">
                     {run.userMessage ?? run.id}
                   </p>
                   <span
@@ -115,8 +102,8 @@ export function RunHistoryPanel() {
                     {run.outcome ?? 'unknown'}
                   </span>
                 </div>
-                <p className="mt-0.5 text-[10px] text-neutral-400 dark:text-neutral-500">
-                  {formatWhen(run.startedAt)}
+                <p className="mt-0.5 text-[10px] text-ink-faint">
+                  {relativeTime(run.startedAt)}
                   {run.id ? ` · ${run.id}` : ''}
                 </p>
               </li>

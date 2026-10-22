@@ -46,11 +46,17 @@ Vitest.
 
 **One process, one port.** This app owns the Express server. It serves:
 - `/api/v1/mcp` — the MCP Streamable HTTP endpoint
+- `/api/v1/ws` — the live WebSocket (one socket per session)
 - `/api/v1/*` — the REST API
 - `/*` — the Next.js frontend, mounted programmatically from `apps/web`
 
 `PORT=8099`. Never add a second port, a Vite proxy, or a separate frontend
 dev server.
+
+**The database.** One global SQLite file at `~/.adh/database/muca.db`, via
+`node:sqlite`. It holds the sessions, the messages, the event log, the
+runs, the approvals, the outstanding requests and the policies. The tests
+always use a temporary path — never the user's real database.
 
 **Layout.**
 
@@ -58,17 +64,40 @@ dev server.
 src/
 ├── ai/
 │   ├── provider.ts        # AIProvider interface + neutral message types
+│   ├── stream.ts          # the streaming shape every provider speaks
+│   ├── sse.ts             # the server-sent-events parser
 │   ├── openai-provider.ts # OpenAI adapter
+│   ├── anthropic-provider.ts
+│   ├── gemini-provider.ts
 │   ├── agent.ts           # the tool-calling loop
+│   ├── compaction.ts      # summarising a long conversation
+│   ├── context-limits.ts  # the model's input limit
 │   └── prompt.ts          # the system prompt
 ├── http/
-│   └── api.ts             # REST routes
+│   ├── api.ts             # REST routes
+│   ├── sessions-api.ts    # the session routes
+│   └── policies-api.ts    # the policy routes
+├── live/
+│   ├── frames.ts          # the live protocol's frames
+│   ├── hub.ts             # the sessions, the sequence numbers, the replay
+│   ├── ws-server.ts       # the socket at /api/v1/ws
+│   ├── run.ts             # one live run
+│   ├── policy-gate.ts     # the server-side permission decision
+│   └── service.ts         # the wiring
 ├── mcp/
 │   ├── server.ts          # McpServer + tool registration
 │   ├── http-handler.ts    # Streamable HTTP transport + session lifecycle
 │   └── client.ts          # a real MCP client for self-checks
+├── policy/
+│   ├── engine.ts          # the policy engine
+│   └── matchers.ts        # the argument matchers
+├── store/
+│   ├── db.ts              # the SQLite schema
+│   └── index.ts           # the stores, one per concern
 ├── tools/
 │   ├── registry.ts        # ToolRegistry + MucaTool
+│   ├── catalogue.ts       # the one tool declaration
+│   ├── ask-user.ts        # the question tool (the live path only)
 │   └── index.ts           # the actual tools
 ├── config.ts              # env parsing
 ├── paths.ts               # repo-root discovery + .env loading

@@ -25,13 +25,24 @@ export const MAX_TOOL_ROUNDS = 12;
 
 export type AgentEvent =
   | { type: 'text'; text: string }
+  /** A piece of the answer, as it streams in. */
+  | { type: 'text_delta'; text: string }
+  /** A piece of the model's reasoning, as it streams in. */
+  | { type: 'thinking'; text: string }
   | {
       type: 'tool_call';
       id: string;
       name: string;
       arguments: Record<string, unknown>;
     }
-  | { type: 'tool_result'; id: string; name: string; result: ToolResult }
+  | {
+      type: 'tool_result';
+      id: string;
+      name: string;
+      result: ToolResult;
+      /** False when the tool failed. */
+      ok: boolean;
+    }
   | {
       type: 'confirmation_required';
       callId: string;
@@ -44,7 +55,7 @@ export type AgentEvent =
       callId: string;
       name: string;
       approved: boolean;
-      source: 'elicitation' | 'http' | 'fallback';
+      source: 'elicitation' | 'http' | 'fallback' | 'policy';
     }
   | { type: 'error'; message: string };
 
@@ -79,6 +90,25 @@ export interface AgentOptions {
    * without a human decision.
    */
   approvalGate?: ApprovalGate;
+  /**
+   * Which tools need a decision.
+   *
+   * The default is `tool.destructive`, which is the MCP behaviour: only a
+   * consequential tool is worth asking about. The live path overrides it
+   * with the **policy** rule — a tool that writes is asked about, a
+   * read-only tool is not — so every tool goes through the gate and the
+   * policy engine decides.
+   */
+  requiresDecision?: (tool: MucaTool) => boolean;
+  /**
+   * Prepares the message list before it is sent to the provider.
+   *
+   * The live path uses it to compact a long conversation: the list is
+   * summarised before it reaches the model's input limit. The hook is
+   * called before every round, because every round makes the list
+   * longer.
+   */
+  prepareMessages?: (messages: ProviderMessage[]) => Promise<ProviderMessage[]>;
 }
 
 /**
@@ -100,6 +130,10 @@ export class Agent {
   private readonly systemPrompt: string;
   private readonly maxRounds: number;
   private readonly approvalGate: ApprovalGate;
+  private readonly requiresDecision: (tool: MucaTool) => boolean;
+  private readonly prepareMessages:
+    | ((messages: ProviderMessage[]) => Promise<ProviderMessage[]>)
+    | undefined;
 
   constructor(options: AgentOptions) {
     this.provider = options.provider;
@@ -107,6 +141,8 @@ export class Agent {
     this.systemPrompt = options.systemPrompt;
     this.maxRounds = options.maxRounds ?? MAX_TOOL_ROUNDS;
     this.approvalGate = options.approvalGate ?? new HttpApprovalGate();
+    this.requiresDecision = options.requiresDecision ?? ((tool) => tool.destructive);
+    this.prepareMessages = options.prepareMessages;
   }
 
   /** Tool catalogue in the provider-neutral shape. */
@@ -131,18 +167,32 @@ export class Agent {
    *   a raw id on its own — the call id in a tool call comes from the
    *   model, not from the server, so an id the client invents could
    *   otherwise authorise an arbitrary destructive call.
+   * @param onEvent Called for every event, as it happens. The live path
+   *   uses it to stream the run to the browser.
+   * @param stream Use the provider's streaming API when it has one. A
+   *   provider that cannot stream still works: the agent falls back to
+   *   one ordinary call and reports the text as a single delta.
    */
   async run(input: {
     history: ProviderMessage[];
     userMessage: string;
     approvalGate?: ApprovalGate;
     approvedCallIds?: string[];
+    onEvent?: (event: AgentEvent) => void;
+    stream?: boolean;
   }): Promise<AgentRunResult> {
     const gate = input.approvalGate ?? this.approvalGate;
     const approved = new Set(input.approvedCallIds ?? []);
     const events: AgentEvent[] = [];
 
-    const messages: ProviderMessage[] = [
+    // Every event is handed to the sink as it happens, so the caller can
+    // stream the run while it is still going.
+    const emit = (event: AgentEvent): void => {
+      events.push(event);
+      input.onEvent?.(event);
+    };
+
+    let messages: ProviderMessage[] = [
       { role: 'system', content: this.systemPrompt },
       ...input.history,
       { role: 'user', content: input.userMessage },
@@ -151,18 +201,29 @@ export class Agent {
     const tools = this.toolCatalogue();
 
     for (let round = 0; round < this.maxRounds; round++) {
+      // The list is prepared before it is sent: the live path compacts a
+      // conversation that has grown too long.
+      if (this.prepareMessages) {
+        try {
+          messages = await this.prepareMessages(messages);
+        } catch {
+          // A compaction that fails must not stop the run: the list is
+          // sent as it is.
+        }
+      }
+
       let response;
       try {
-        response = await this.provider.chat({ messages, tools });
+        response = await this.ask(messages, tools, input.stream === true, emit);
       } catch (error) {
         const message =
           error instanceof Error ? error.message : 'Provider request failed';
-        events.push({ type: 'error', message });
+        emit({ type: 'error', message });
         return { text: '', events, awaitingConfirmation: false, pendingCall: null };
       }
 
       if (response.content) {
-        events.push({ type: 'text', text: response.content });
+        emit({ type: 'text', text: response.content });
       }
 
       if (response.toolCalls.length === 0) {
@@ -191,7 +252,7 @@ export class Agent {
             name: call.name,
             content: `Invalid arguments: ${parsed.error}`,
           });
-          events.push({ type: 'error', message: parsed.error });
+          emit({ type: 'error', message: parsed.error });
           continue;
         }
 
@@ -204,18 +265,18 @@ export class Agent {
             name: call.name,
             content: message,
           });
-          events.push({ type: 'error', message });
+          emit({ type: 'error', message });
           continue;
         }
 
-        events.push({
+        emit({
           type: 'tool_call',
           id: call.id,
           name: call.name,
           arguments: parsed.args,
         });
 
-        if (tool.destructive) {
+        if (this.requiresDecision(tool)) {
           const approval: ApprovalRequest = {
             toolName: tool.name,
             title: tool.title,
@@ -253,7 +314,7 @@ export class Agent {
               // Record the decision before parking: the audit trail must
               // show that this call was *not* authorised, and the UI
               // needs to know an approval was asked for and withheld.
-              events.push({
+              emit({
                 type: 'approval_decision',
                 callId: call.id,
                 name: call.name,
@@ -267,7 +328,7 @@ export class Agent {
                 arguments: parsed.args,
                 message: approval.message,
               };
-              events.push({
+              emit({
                 type: 'confirmation_required',
                 callId: call.id,
                 name: call.name,
@@ -282,7 +343,7 @@ export class Agent {
               };
             }
 
-            events.push({
+            emit({
               type: 'approval_decision',
               callId: call.id,
               name: call.name,
@@ -300,11 +361,11 @@ export class Agent {
               name: call.name,
               content: declined,
             });
-            events.push({ type: 'error', message: declined });
+            emit({ type: 'error', message: declined });
             continue;
           }
 
-          events.push({
+          emit({
             type: 'approval_decision',
             callId: call.id,
             name: call.name,
@@ -315,13 +376,14 @@ export class Agent {
 
         const { result, error } = await this.executeTool(tool, parsed.args);
         if (error) {
-          events.push({ type: 'error', message: error });
+          emit({ type: 'error', message: error });
         }
-        events.push({
+        emit({
           type: 'tool_result',
           id: call.id,
           name: call.name,
           result,
+          ok: error === undefined,
         });
         messages.push({
           role: 'tool',
@@ -342,13 +404,58 @@ export class Agent {
     const summary = await this.summarise(messages);
 
     if (summary) {
-      events.push({ type: 'text', text: summary });
+      emit({ type: 'text', text: summary });
       return { text: summary, events, awaitingConfirmation: false, pendingCall: null };
     }
 
     const message = `Reached the maximum of ${this.maxRounds} tool rounds.`;
-    events.push({ type: 'error', message });
+    emit({ type: 'error', message });
     return { text: '', events, awaitingConfirmation: false, pendingCall: null };
+  }
+
+  /**
+   * Asks the model for the next turn.
+   *
+   * When the caller asked for a stream and the provider has one, the
+   * provider's deltas are handed to `emit` as they arrive. A provider
+   * that cannot stream still works: the agent falls back to one ordinary
+   * call and reports the text as a single delta, so the caller always
+   * sees the same events.
+   */
+  private async ask(
+    messages: ProviderMessage[],
+    tools: ProviderTool[],
+    stream: boolean,
+    emit: (event: AgentEvent) => void,
+  ): Promise<Awaited<ReturnType<AIProvider['chat']>>> {
+    if (stream && typeof this.provider.chatStream === 'function') {
+      const response = await this.provider.chatStream(
+        { messages, tools },
+        (event) => {
+          if (event.type === 'message_delta') {
+            emit({ type: 'text_delta', text: event.text });
+            return;
+          }
+          if (event.type === 'thinking_delta') {
+            emit({ type: 'thinking', text: event.text });
+          }
+          // A tool call is emitted by the loop itself, once its arguments
+          // have been validated, so the caller never sees a call that the
+          // agent is not going to make.
+        },
+      );
+      return response;
+    }
+
+    const response = await this.provider.chat({ messages, tools });
+
+    if (stream && response.content) {
+      // The provider did not stream. The text is reported as one delta,
+      // so the caller sees the same shape either way.
+      emit({ type: 'text_delta', text: response.content });
+    }
+
+    return response;
   }
 
   /**

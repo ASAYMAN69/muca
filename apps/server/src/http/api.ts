@@ -16,11 +16,14 @@ import {
   toJson,
 } from '../tools/catalogue.js';
 import { SERVER_NAME, SERVER_VERSION } from '../mcp/server.js';
-import type { RunHistoryStore, RunRecord } from '../store/run-history.js';
 import type {
   PendingApproval,
   PendingApprovalRegistry,
 } from '../store/pending-approvals.js';
+import type { MucaStore } from '../store/index.js';
+import type { LiveService } from '../live/service.js';
+import { createSessionsRouter } from './sessions-api.js';
+import { createPoliciesRouter } from './policies-api.js';
 import type { AiState } from '../ai/ai-state.js';
 import type { GatewayDecision } from '../ai/gateway.js';
 import type { ProbeResult } from '../ai/probe.js';
@@ -36,10 +39,11 @@ export const API_PREFIX = '/api/v1';
  *   GET  /api/v1/health          — liveness + configuration summary
  *   GET  /api/v1/tools           — the MCP tool catalogue
  *   POST /api/v1/chat            — run the agent
- *   GET  /api/v1/runs            — the run history
- *   GET  /api/v1/runs/:runId     — one run
  *   GET  /api/v1/tasks/:taskId   — the status of a long-running task
  *   GET  /api/v1/tasks           — the list of long-running tasks
+ *
+ * The session and policy routes are mounted beside them when a database
+ * is wired up. They are **additive**: nothing above changes shape.
  */
 export function createApiRouter(deps: {
   registry: ToolRegistry;
@@ -48,11 +52,20 @@ export function createApiRouter(deps: {
   protocolVersion: string;
   mcpUrl: string;
   /**
-   * The run history store. Optional: without it the run routes report an
-   * empty history and `/chat` does not persist anything. The production
-   * wiring always supplies one.
+   * The database.
+   *
+   * Optional: without it there are no session or policy routes. The
+   * production wiring always supplies one.
    */
-  runHistory?: RunHistoryStore;
+  store?: MucaStore;
+  /**
+   * The live service.
+   *
+   * Optional: without it `/chat` behaves exactly as it always has — a
+   * request/response run with no streaming. With it, a run that names a
+   * session also streams to that session's socket.
+   */
+  live?: LiveService;
   /**
    * The parked approvals.
    *
@@ -100,6 +113,14 @@ export function createApiRouter(deps: {
       .default([]),
     /** Tool call ids the user has approved in this turn. */
     approvedCallIds: z.array(z.string()).default([]),
+    /**
+     * The session the run belongs to.
+     *
+     * Optional and additive: a request without it behaves exactly as it
+     * always has. With it, the run is streamed to that session's socket
+     * and it survives a restart.
+     */
+    sessionId: z.string().max(120).optional(),
   });
 
   router.get('/health', (_req: Request, res: Response) => {
@@ -167,6 +188,42 @@ export function createApiRouter(deps: {
       role: turn.role,
       content: turn.content,
     }));
+
+    // The live path: the run is streamed to the session's socket, and it
+    // keeps going in the background when it parks on a permission or a
+    // question. The response comes back when the run reaches a decision
+    // point, so the old client and the new one agree.
+    const sessionId = deps.live?.resolveSession(parsed.data.sessionId) ?? null;
+    if (sessionId && deps.live) {
+      const run = deps.live.start({
+        sessionId,
+        message: parsed.data.message,
+        history: historyForSession(deps.store, sessionId, history),
+      });
+
+      if (run) {
+        await run.whenParked();
+
+        const pendingCall = run.pendingPermission();
+        res.json({
+          // The same shape the request/response path returns: the
+          // model's answer, the events, and the pending permission.
+          text: run.finalText(),
+          awaitingConfirmation: pendingCall !== null,
+          pendingCall,
+          events: serializeAgentResult({
+            text: run.finalText(),
+            events: run.agentEvents(),
+            awaitingConfirmation: pendingCall !== null,
+            pendingCall: null,
+          }).events,
+          runId: run.runId,
+          // Additive: the run is live, and it is still going.
+          live: true,
+        });
+        return;
+      }
+    }
 
     // The HTTP approval path: the client sends the call ids it approved.
     // The gate parks the run until one of them shows up.
@@ -246,54 +303,15 @@ export function createApiRouter(deps: {
         deps.pendingApprovals?.remove(callId);
       }
 
-      const record = buildRunRecord({
-        runId,
-        startedAt,
-        userMessage: parsed.data.message,
-        result,
-      });
-      await deps.runHistory?.save(record);
-
       res.json({
         ...serializeAgentResult(result),
-        runId: record.id,
+        runId,
       });
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Agent run failed';
-      await deps.runHistory?.save({
-        id: runId,
-        startedAt,
-        finishedAt: new Date().toISOString(),
-        userMessage: parsed.data.message,
-        text: '',
-        outcome: 'error',
-        toolCalls: [],
-        approvals: [],
-        taskId: null,
-        error: message,
-      });
       res.status(500).json({ error: message });
     }
-  });
-
-  /* ------------------------------------------------------------------ */
-  /* Run history                                                         */
-  /* ------------------------------------------------------------------ */
-
-  router.get('/runs', (req: Request, res: Response) => {
-    const limit = clampLimit(req.query.limit);
-    res.json({ runs: deps.runHistory?.list(limit) ?? [] });
-  });
-
-  router.get('/runs/:runId', (req: Request, res: Response) => {
-    const runId = String(req.params.runId);
-    const run = deps.runHistory?.get(runId) ?? null;
-    if (!run) {
-      res.status(404).json({ error: `No run with id ${runId}.` });
-      return;
-    }
-    res.json({ run });
   });
 
   /* ------------------------------------------------------------------ */
@@ -353,6 +371,17 @@ export function createApiRouter(deps: {
     }
   });
 
+  /* ------------------------------------------------------------------ */
+  /* Sessions and policies                                               */
+  /* ------------------------------------------------------------------ */
+
+  // They need a database. Without one the routes are simply not there,
+  // which is what the tests that do not use a database expect.
+  if (deps.store) {
+    router.use(createSessionsRouter({ store: deps.store, registry: deps.registry }));
+    router.use(createPoliciesRouter({ store: deps.store }));
+  }
+
   /**
    * The full tool catalogue.
    *
@@ -378,82 +407,32 @@ export interface TaskSnapshotLike {
   error?: string;
 }
 
-function clampLimit(raw: unknown): number {
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) return 20;
-  return Math.min(Math.max(Math.trunc(parsed), 1), 100);
-}
-
 /**
- * Turns the agent result into the persisted run record.
+ * The conversation of a session.
  *
- * The tool calls and the approval decisions are read off the event list,
- * which is the single source of truth for what happened.
+ * The database is the source of truth for a session: the messages are
+ * what the user has already said and what the agent has already
+ * answered. The client-supplied history is only used when the session
+ * has nothing stored yet.
  */
-export function buildRunRecord(input: {
-  runId: string;
-  startedAt: string;
-  userMessage: string;
-  result: {
-    text: string;
-    events: AgentEvent[];
-    awaitingConfirmation: boolean;
-  };
-}): RunRecord {
-  const toolCalls: RunRecord['toolCalls'] = [];
-  const approvals: RunRecord['approvals'] = [];
-  const errors: string[] = [];
+function historyForSession(
+  store: MucaStore | undefined,
+  sessionId: string,
+  fallback: ProviderMessage[],
+): ProviderMessage[] {
+  if (!store) return fallback;
 
-  for (const event of input.result.events) {
-    switch (event.type) {
-      case 'tool_call':
-        toolCalls.push({
-          id: event.id,
-          name: event.name,
-          arguments: event.arguments,
-          at: input.startedAt,
-        });
-        break;
-      case 'tool_result': {
-        const existing = toolCalls.find((call) => call.id === event.id);
-        if (existing) {
-          existing.summary = event.result.summary;
-        }
-        break;
-      }
-      case 'approval_decision':
-        approvals.push({
-          requestId: event.callId,
-          toolName: event.name,
-          decision: event.approved ? 'approved' : 'rejected',
-          source: event.source,
-          at: input.startedAt,
-        });
-        break;
-      case 'error':
-        errors.push(event.message);
-        break;
-      default:
-        break;
-    }
-  }
+  const stored = store.messages
+    .list(sessionId)
+    .filter(
+      (message) => message.role === 'user' || message.role === 'assistant',
+    )
+    .map((message) => ({
+      role: message.role as 'user' | 'assistant',
+      content: message.content,
+    }));
 
-  return {
-    id: input.runId,
-    startedAt: input.startedAt,
-    finishedAt: new Date().toISOString(),
-    userMessage: input.userMessage,
-    text: input.result.text,
-    outcome: input.result.awaitingConfirmation
-      ? 'awaiting_approval'
-      : errors.length > 0
-        ? 'error'
-        : 'completed',
-    toolCalls,
-    approvals,
-    taskId: null,
-    error: errors.length > 0 ? errors.join('; ') : null,
-  };
+  return stored.length > 0 ? stored : fallback;
 }
 
 export function serializeAgentResult(result: {
@@ -475,6 +454,10 @@ export function serializeAgentResult(result: {
       switch (event.type) {
         case 'text':
           return { type: 'text', text: event.text };
+        case 'text_delta':
+          return { type: 'text_delta', text: event.text };
+        case 'thinking':
+          return { type: 'thinking', text: event.text };
         case 'tool_call':
           return {
             type: 'tool_call',

@@ -56,7 +56,7 @@ Every server→client frame is one JSON object:
 | `message_complete` | `{ text }` | The model's final text for this turn |
 | `tool_call_started` | `{ callId, name, arguments }` | The model asked for a tool |
 | `tool_call_completed` | `{ callId, name, summary, data, ok }` | The tool finished |
-| `permission_requested` | `{ requestId, tool, title, description, arguments, reason, matchedPolicy }` | A tool needs a decision — **the run is parked** |
+| `permission_requested` | `{ requestId, toolCallId, tool, title, description, arguments, reason, matchedPolicy }` | A tool needs a decision — **the run is parked** |
 | `permission_resolved` | `{ requestId, decision, policyId? }` | The user decided |
 | `clarification_requested` | `{ requestId, question, options? }` | The agent needs an answer — **the run is parked** |
 | `clarification_answered` | `{ requestId, answer }` | The user answered |
@@ -75,6 +75,15 @@ from the model's prose:
 - `arguments` — the exact, validated arguments that would run.
 - `reason` — why it is being asked: `"no policy matched, and this tool writes"`, or `"policy 'fix/* branches' asks"`.
 - `matchedPolicy` — the policy that produced the decision, or `null`.
+- `toolCallId` — the model's tool call this permission belongs to, so the
+  client can put the decision on the right row instead of guessing.
+  **Correlation only.** The `requestId` is what authorises the call; this
+  id is never accepted as an authorisation token, and the server does not
+  treat it as one.
+- `autoResolved` — `true` when a policy has already answered and **nobody
+  is asked**: the tool is refused, the run continues, and the server does
+  not park. The frame is still sent so the user can see what was refused
+  and which policy refused it. A client must not show buttons for it.
 
 ## 4. Client → server frames
 
@@ -283,6 +292,11 @@ Everything below is **additive**. Nothing existing changes shape.
 | `GET` | `/api/v1/tools` | **Unchanged** — already exists |
 
 `POST /api/v1/chat` and the MCP endpoint keep their current contracts.
+`POST /api/v1/chat` additionally accepts an **optional `sessionId`**: the
+client should send the session it is watching, so the run, its events and
+its permissions all land in that session. Without it the server falls back
+to the single active socket session, and to a fresh session when there is
+none.
 
 ## 12. Non-negotiables
 
@@ -291,6 +305,9 @@ Everything below is **additive**. Nothing existing changes shape.
   it stays on Streamable HTTP.
 - **No authentication.** The socket, the REST API and the MCP endpoint are
   all open, by decision. The server prints a loud warning at boot.
+- **Control frames carry `seq: null`.** `hello` and `replayed` do not
+  consume a sequence number, so a client that tracked the counter would
+  otherwise skip the first real frame as a duplicate.
 - **The browser only calls relative paths.** No absolute URLs, no
   hardcoded host or port, in source or in the built bundle.
 - **Provider keys are never logged, never in a URL, never in an error

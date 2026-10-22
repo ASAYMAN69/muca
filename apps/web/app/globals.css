@@ -1,26 +1,185 @@
 @import "tailwindcss";
 
+/* ---------------------------------------------------------------------------
+   Muca's palette.
+
+   Dark is the default and it is designed, not inverted: a warm graphite
+   base (hue 70, almost no chroma) so it does not read as the usual
+   observability-tool blue, one mint accent for "live", and a small
+   semantic set for the states the timeline actually shows.
+
+   Light is a designed counterpart, not a filter: same hues, inverted
+   lightness, one block of overrides.
+--------------------------------------------------------------------------- */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: dark;
+
+  --surface: oklch(0.145 0.006 70);
+  --surface-raised: oklch(0.185 0.007 70);
+  --surface-sunken: oklch(0.115 0.005 70);
+  --surface-hover: oklch(0.215 0.008 70);
+
+  --line: oklch(0.275 0.008 70);
+  --line-strong: oklch(0.36 0.01 70);
+
+  --ink: oklch(0.965 0.004 70);
+  --ink-muted: oklch(0.735 0.008 70);
+  --ink-faint: oklch(0.565 0.008 70);
+
+  --accent: oklch(0.8 0.125 175);
+  --accent-soft: oklch(0.8 0.125 175 / 0.14);
+  --accent-line: oklch(0.8 0.125 175 / 0.4);
+
+  --warn: oklch(0.845 0.135 85);
+  --warn-soft: oklch(0.845 0.135 85 / 0.12);
+  --warn-line: oklch(0.845 0.135 85 / 0.38);
+
+  --good: oklch(0.79 0.135 155);
+  --good-soft: oklch(0.79 0.135 155 / 0.12);
+  --good-line: oklch(0.79 0.135 155 / 0.36);
+
+  --bad: oklch(0.7 0.165 22);
+  --bad-soft: oklch(0.7 0.165 22 / 0.13);
+  --bad-line: oklch(0.7 0.165 22 / 0.4);
+
+  --shadow-panel: 0 1px 2px oklch(0 0 0 / 0.4), 0 12px 32px -12px oklch(0 0 0 / 0.5);
+
+  /* Motion. Exponential ease-out, short durations, never a bounce. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+}
+
+/* The light theme is opt-in, so dark really is the default. */
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --surface: oklch(0.983 0.003 70);
+  --surface-raised: oklch(1 0 0);
+  --surface-sunken: oklch(0.962 0.004 70);
+  --surface-hover: oklch(0.945 0.005 70);
+
+  --line: oklch(0.9 0.006 70);
+  --line-strong: oklch(0.8 0.008 70);
+
+  --ink: oklch(0.23 0.01 70);
+  --ink-muted: oklch(0.48 0.01 70);
+  --ink-faint: oklch(0.62 0.01 70);
+
+  --accent: oklch(0.6 0.115 175);
+  --accent-soft: oklch(0.6 0.115 175 / 0.1);
+  --accent-line: oklch(0.6 0.115 175 / 0.35);
+
+  --warn: oklch(0.58 0.115 65);
+  --warn-soft: oklch(0.58 0.115 65 / 0.09);
+  --warn-line: oklch(0.58 0.115 65 / 0.3);
+
+  --good: oklch(0.52 0.115 150);
+  --good-soft: oklch(0.52 0.115 150 / 0.09);
+  --good-line: oklch(0.52 0.115 150 / 0.3);
+
+  --bad: oklch(0.52 0.17 25);
+  --bad-soft: oklch(0.52 0.17 25 / 0.08);
+  --bad-line: oklch(0.52 0.17 25 / 0.32);
+
+  --shadow-panel: 0 1px 2px oklch(0.2 0.02 70 / 0.06),
+    0 12px 28px -14px oklch(0.2 0.02 70 / 0.18);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-sunken: var(--surface-sunken);
+  --color-surface-hover: var(--surface-hover);
+
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-faint: var(--ink-faint);
+
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-line: var(--accent-line);
+
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-warn-line: var(--warn-line);
+
+  --color-good: var(--good);
+  --color-good-soft: var(--good-soft);
+  --color-good-line: var(--good-line);
+
+  --color-bad: var(--bad);
+  --color-bad-soft: var(--bad-soft);
+  --color-bad-line: var(--bad-line);
+
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+body {
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The scrollbar belongs to the theme, not to the browser. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+/* No double-tap zoom delay on the things people press. */
+button,
+a,
+label,
+input,
+select,
+textarea {
+  touch-action: manipulation;
+}
+
+/* Every focus ring in the app is the same ring. It lives in the base
+   layer, so a component can still choose its own colour. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+/* Reduced motion: keep the state changes, drop the movement. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* The two entrances the app uses. */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }

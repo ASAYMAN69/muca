@@ -9,7 +9,6 @@ import express from 'express';
 import { createApiRouter } from '../src/http/api.js';
 import { ToolRegistry } from '../src/tools/registry.js';
 import { createTools } from '../src/tools/index.js';
-import { RunHistoryStore } from '../src/store/run-history.js';
 import { PendingApprovalRegistry } from '../src/store/pending-approvals.js';
 import type { AIProvider, ProviderResponse } from '../src/ai/provider.js';
 
@@ -68,13 +67,11 @@ class BranchProvider implements AIProvider {
 describe('the new REST routes', () => {
   let httpServer: Server;
   let baseUrl: string;
-  let runHistory: RunHistoryStore;
   let pendingApprovals: PendingApprovalRegistry;
   let tempDir: string;
 
   beforeAll(async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'muca-api-'));
-    runHistory = new RunHistoryStore(join(tempDir, 'runs'));
     pendingApprovals = new PendingApprovalRegistry();
 
     const app = express();
@@ -87,7 +84,6 @@ describe('the new REST routes', () => {
         systemPrompt: 'test',
         protocolVersion: '2025-11-25',
         mcpUrl: 'http://localhost:8099/api/v1/mcp',
-        runHistory,
         pendingApprovals,
         getTask: async (taskId) =>
           taskId === 'task_known'
@@ -119,64 +115,6 @@ describe('the new REST routes', () => {
   afterAll(async () => {
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
     rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  /* ---------------------------------------------------------------- */
-  /* Runs                                                             */
-  /* ---------------------------------------------------------------- */
-
-  it('GET /runs lists the run history', async () => {
-    const response = await fetch(`${baseUrl}/runs`);
-    expect(response.status).toBe(200);
-
-    const body = (await response.json()) as {
-      runs: Array<{ id: string; outcome: string; toolCallCount: number }>;
-    };
-    expect(Array.isArray(body.runs)).toBe(true);
-  });
-
-  it('POST /chat records the run and GET /runs/:runId returns it', async () => {
-    const chat = await fetch(`${baseUrl}/chat`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ message: 'create a branch', history: [] }),
-    });
-    expect(chat.status).toBe(200);
-
-    const chatBody = (await chat.json()) as { runId: string };
-    expect(chatBody.runId).toBeTruthy();
-
-    const response = await fetch(`${baseUrl}/runs/${chatBody.runId}`);
-    expect(response.status).toBe(200);
-
-    const body = (await response.json()) as {
-      run: {
-        id: string;
-        userMessage: string;
-        toolCalls: Array<{ name: string }>;
-        approvals: Array<{ toolName: string; decision: string }>;
-        outcome: string;
-      };
-    };
-    expect(body.run.id).toBe(chatBody.runId);
-    expect(body.run.userMessage).toBe('create a branch');
-    expect(body.run.toolCalls.some((t) => t.name === 'create_branch')).toBe(true);
-    expect(body.run.outcome).toBe('awaiting_approval');
-  });
-
-  it('GET /runs/:runId returns 404 for an unknown run', async () => {
-    const response = await fetch(`${baseUrl}/runs/run_nope`);
-    expect(response.status).toBe(404);
-
-    const body = (await response.json()) as { error: string };
-    expect(body.error).toContain('No run with id');
-  });
-
-  it('keeps the run history across a new store instance', async () => {
-    // "Restart": a fresh store over the same directory.
-    const restarted = new RunHistoryStore(join(tempDir, 'runs'));
-    const runs = restarted.list();
-    expect(runs.length).toBeGreaterThan(0);
   });
 
   /* ---------------------------------------------------------------- */
@@ -223,7 +161,6 @@ describe('the new REST routes', () => {
     const app = express();
     app.use(express.json());
     const approvals = new PendingApprovalRegistry();
-    const history = new RunHistoryStore(join(tempDir, 'runs-approval'));
     app.use(
       '/api/v1',
       createApiRouter({
@@ -232,7 +169,6 @@ describe('the new REST routes', () => {
         systemPrompt: 'test',
         protocolVersion: '2025-11-25',
         mcpUrl: 'http://localhost:8099/api/v1/mcp',
-        runHistory: history,
         pendingApprovals: approvals,
       }),
     );
@@ -294,7 +230,6 @@ describe('the new REST routes', () => {
     const app = express();
     app.use(express.json());
     const approvals = new PendingApprovalRegistry();
-    const history = new RunHistoryStore(join(tempDir, 'runs-mismatch'));
     app.use(
       '/api/v1',
       createApiRouter({
@@ -307,7 +242,6 @@ describe('the new REST routes', () => {
         systemPrompt: 'test',
         protocolVersion: '2025-11-25',
         mcpUrl: 'http://localhost:8099/api/v1/mcp',
-        runHistory: history,
         pendingApprovals: approvals,
       }),
     );

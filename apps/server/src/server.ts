@@ -1,10 +1,9 @@
 import express, { type Express } from 'express';
 import { createServer as createHttpServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { resolve } from 'node:path';
 
-import { loadConfig, type AppConfig } from './config.js';
-import { REPO_ROOT, WEB_DIR, APP_ROOT } from './paths.js';
+import { loadConfig, type AppConfig, type AiProviderName } from './config.js';
+import { WEB_DIR } from './paths.js';
 import { API_PREFIX, createApiRouter, type TaskSnapshotLike } from './http/api.js';
 import { McpHttpHandler } from './mcp/http-handler.js';
 import { ToolRegistry } from './tools/registry.js';
@@ -17,12 +16,15 @@ import { gatewayInput, selectProvider, type GatewayDecision } from './ai/gateway
 import type { ProbeResult } from './ai/probe.js';
 import type { AiState } from './ai/ai-state.js';
 import { SYSTEM_PROMPT } from './ai/prompt.js';
-import {
-  RunHistoryStore,
-  defaultRunHistoryDir,
-} from './store/run-history.js';
+import { MucaStore, defaultDatabasePath } from './store/index.js';
 import { PendingApprovalRegistry } from './store/pending-approvals.js';
 import { isTerminalStatus, type TaskStatus } from './mcp/tasks.js';
+import { LiveService } from './live/service.js';
+import { createAskUserTool } from './tools/ask-user.js';
+import {
+  ContextLimitResolver,
+  type ProviderLimitConfig,
+} from './ai/context-limits.js';
 
 export interface BuiltServer {
   app: Express;
@@ -30,7 +32,10 @@ export interface BuiltServer {
   config: AppConfig;
   registry: ToolRegistry;
   mcp: McpHttpHandler;
-  runHistory: RunHistoryStore;
+  /** The database. */
+  store: MucaStore;
+  /** The live service: the socket, the hub and the runs. */
+  live: LiveService;
   /** The gateway's decision: which provider is in use, and how it went. */
   ai: AiState;
   close: () => Promise<void>;
@@ -71,12 +76,46 @@ export async function buildServer(): Promise<BuiltServer> {
 
   const provider: AIProvider | null = createProvider(config, decision.selected);
 
-  const runHistory = new RunHistoryStore(
-    config.runHistoryDir
-      ? resolve(REPO_ROOT, config.runHistoryDir)
-      : defaultRunHistoryDir(APP_ROOT),
+  // The database. One global SQLite file, created on first use.
+  const store = new MucaStore(
+    config.databasePath || defaultDatabasePath(),
   );
-  runHistory.init();
+
+  // The live agent's registry has one tool the MCP server does not: the
+  // question tool. An MCP client has no way to answer a question over
+  // the protocol, so a call there would hang forever. The MCP surface
+  // and the REST catalogue are unchanged.
+  const liveRegistry = new ToolRegistry().registerAll([
+    ...registry.list(),
+    createAskUserTool(),
+  ]);
+
+  // The model's input limit is resolved at startup and cached. The boot
+  // is never blocked on it: a provider that cannot be asked falls back
+  // to the table.
+  const limitConfig = providerLimitConfig(config, decision.selected);
+  const limitResolver = new ContextLimitResolver();
+  const contextLimit = limitResolver.resolve(limitConfig);
+
+  const live = new LiveService({
+    store,
+    provider,
+    registry,
+    liveRegistry,
+    systemPrompt: SYSTEM_PROMPT,
+    model: decision.model,
+    contextLimit: async () => {
+      try {
+        return await contextLimit;
+      } catch {
+        return null;
+      }
+    },
+    countTokens: (messages) =>
+      limitResolver.count(limitConfig, messages as unknown[]),
+    compactionThreshold: config.compactionThreshold,
+    compactionKeepTurns: config.compactionKeepTurns,
+  });
 
   const pendingApprovals = new PendingApprovalRegistry();
 
@@ -118,7 +157,8 @@ export async function buildServer(): Promise<BuiltServer> {
       systemPrompt: SYSTEM_PROMPT,
       protocolVersion: config.mcp.protocolVersion,
       mcpUrl: config.mcp.publicUrl,
-      runHistory,
+      store,
+      live,
       pendingApprovals,
       getTask: readTask,
       listTasks: listTasks,
@@ -159,15 +199,21 @@ export async function buildServer(): Promise<BuiltServer> {
 
   const httpServer = createHttpServer(app);
 
+  // The socket is on the **same** server, on the **same** port. There is
+  // no second listener and no proxy.
+  live.attach(httpServer);
+
   const close = async () => {
+    await live.close();
     await mcp.closeAll();
     await new Promise<void>((resolveClose) => {
       httpServer.close(() => resolveClose());
     });
     await nextApp.close?.();
+    store.close();
   };
 
-  return { app, httpServer, config, registry, mcp, runHistory, ai, close };
+  return { app, httpServer, config, registry, mcp, store, live, ai, close };
 
   /* ------------------------------------------------------------------ */
   /* Task helpers                                                       */
@@ -225,6 +271,55 @@ export async function buildServer(): Promise<BuiltServer> {
   ): Promise<{ probes: ProbeResult[]; applied: false; decision: GatewayDecision }> {
     const decision = await selectProvider(gatewayInput(current));
     return { probes: decision.probes, applied: false, decision };
+  }
+}
+
+/**
+ * The provider's limit configuration.
+ *
+ * The key is never in the URL: it goes in the header the provider
+ * expects.
+ */
+function providerLimitConfig(
+  config: AppConfig,
+  selected: AiProviderName | null,
+): ProviderLimitConfig {
+  switch (selected) {
+    case 'anthropic':
+      return {
+        provider: 'anthropic',
+        model: config.ai.anthropic.model,
+        endpoint: config.ai.anthropic.endpoint,
+        apiKey: config.ai.anthropic.apiKey,
+      };
+    case 'openai':
+      return {
+        provider: 'openai',
+        model: config.ai.openai.model,
+        endpoint: config.ai.openai.endpoint,
+        apiKey: config.ai.openai.apiKey,
+      };
+    case 'gemini':
+      return {
+        provider: 'gemini',
+        model: config.ai.gemini.model,
+        endpoint: config.ai.gemini.endpoint,
+        apiKey: config.ai.gemini.apiKey,
+      };
+    case 'bedrock':
+      return {
+        provider: null,
+        model: config.ai.bedrock.modelId,
+        endpoint: '',
+        apiKey: '',
+      };
+    default:
+      return {
+        provider: null,
+        model: null,
+        endpoint: '',
+        apiKey: '',
+      };
   }
 }
 

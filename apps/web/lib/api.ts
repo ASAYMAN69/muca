@@ -48,6 +48,14 @@ export type AgentEvent =
       name: string;
       arguments: Record<string, unknown>;
       message: string;
+      /** The tool's own title, when the server knows it. */
+      title?: string;
+      /** The tool's own description. Never the model's prose. */
+      description?: string;
+      /** Why the server is asking: the policy, or "this tool writes". */
+      reason?: string;
+      /** The policy that produced the decision, if any. */
+      matchedPolicy?: string | null;
     }
   | {
       /** The backend reports the decision it recorded for an approval. */
@@ -56,6 +64,19 @@ export type AgentEvent =
       name: string;
       approved: boolean;
       source?: string;
+    }
+  | {
+      /** The agent needs an answer before it can continue. */
+      type: 'clarification';
+      id: string;
+      question: string;
+      options?: string[];
+    }
+  | {
+      /** The user answered the question. */
+      type: 'clarification_answered';
+      id: string;
+      answer: string;
     }
   | { type: 'error'; message: string };
 
@@ -116,6 +137,12 @@ function parseAgentEvent(raw: unknown): AgentEvent | null {
         name,
         arguments: args,
         message: asText(record.message),
+        title: typeof record.title === 'string' ? record.title : undefined,
+        description:
+          typeof record.description === 'string' ? record.description : undefined,
+        reason: typeof record.reason === 'string' ? record.reason : undefined,
+        matchedPolicy:
+          typeof record.matchedPolicy === 'string' ? record.matchedPolicy : null,
       };
     case 'approval_decision':
       return {
@@ -124,6 +151,21 @@ function parseAgentEvent(raw: unknown): AgentEvent | null {
         name,
         approved: record.approved === true,
         source: typeof record.source === 'string' ? record.source : undefined,
+      };
+    case 'clarification':
+      return {
+        type: 'clarification',
+        id,
+        question: asText(record.question),
+        options: Array.isArray(record.options)
+          ? record.options.filter((option): option is string => typeof option === 'string')
+          : undefined,
+      };
+    case 'clarification_answered':
+      return {
+        type: 'clarification_answered',
+        id,
+        answer: asText(record.answer),
       };
     case 'error':
       return { type: 'error', message: asText(record.message) };
@@ -171,6 +213,16 @@ export interface PendingCall {
   name: string;
   arguments: Record<string, unknown>;
   message: string;
+  /** The request id, when the server asked over the socket. */
+  requestId?: string;
+  /** The tool's own title. */
+  title?: string;
+  /** The tool's own description. */
+  description?: string;
+  /** Why the server is asking. */
+  reason?: string;
+  /** The policy that produced the decision, if any. */
+  matchedPolicy?: string | null;
 }
 
 export interface ChatResponse {
@@ -295,14 +347,33 @@ export function fetchHealth(): Promise<HealthResponse> {
   return request<HealthResponse>('/health');
 }
 
+/** The tool catalogue. Falls back to an empty list when it is missing. */
+export async function fetchTools(): Promise<ToolSummary[]> {
+  try {
+    const response = await request<{ tools?: ToolSummary[] }>('/tools');
+    return Array.isArray(response?.tools) ? response.tools : [];
+  } catch {
+    return [];
+  }
+}
+
 export function sendChat(
   message: string,
   history: ChatTurn[],
   approvedCallIds: string[] = [],
+  sessionId?: string | null,
 ): Promise<ChatResponse> {
   return request<ChatResponse>('/chat', {
     method: 'POST',
-    body: JSON.stringify({ message, history, approvedCallIds }),
+    // The session id tells the server which session the run belongs to,
+    // so its events and its permissions land in the session the user is
+    // looking at.
+    body: JSON.stringify({
+      message,
+      history,
+      approvedCallIds,
+      ...(sessionId ? { sessionId } : {}),
+    }),
   });
 }
 
@@ -326,6 +397,212 @@ export async function fetchRun(runId: string): Promise<RunRecord | null> {
     return response?.run ?? null;
   } catch {
     return null;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Sessions                                                                    */
+/* -------------------------------------------------------------------------- */
+
+/** A session in the sidebar. */
+export interface SessionSummary {
+  id: string;
+  title?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  archived?: boolean;
+  /** True when the agent is waiting for this session. */
+  waiting?: boolean;
+  /** How many requests are waiting. */
+  waitingCount?: number;
+  /** True while a run is going. */
+  active?: boolean;
+}
+
+/** A message in a session. */
+export interface SessionMessage {
+  id?: string;
+  role: 'user' | 'assistant' | 'system' | string;
+  content?: string;
+  createdAt?: string;
+}
+
+/** A request the agent is waiting on: a permission or a question. */
+export interface WaitingRequest {
+  id: string;
+  kind?: 'permission' | 'clarification' | string;
+  tool?: string;
+  title?: string;
+  question?: string;
+  createdAt?: string;
+}
+
+/** One session, with everything it holds. */
+export interface SessionDetail {
+  id: string;
+  title?: string;
+  messages?: SessionMessage[];
+  runs?: RunRecord[];
+  waiting?: WaitingRequest[];
+  updatedAt?: string;
+}
+
+export interface SessionsResponse {
+  sessions?: SessionSummary[];
+}
+
+export interface SessionResponse {
+  session?: SessionDetail;
+}
+
+export interface CreatedSessionResponse {
+  session?: SessionSummary;
+}
+
+/**
+ * The sessions, newest first.
+ *
+ * Returns `null` when the route does not exist yet, so the app can tell
+ * "no sessions" from "no session list" and fall back to a single local
+ * session.
+ */
+export async function fetchSessions(): Promise<SessionSummary[] | null> {
+  try {
+    const response = await request<SessionsResponse>('/sessions');
+    return Array.isArray(response?.sessions) ? response.sessions : [];
+  } catch {
+    return null;
+  }
+}
+
+/** Creates a session. Returns null when the route is not there yet. */
+export async function createSession(
+  title = '',
+): Promise<SessionSummary | null> {
+  try {
+    const response = await request<CreatedSessionResponse>('/sessions', {
+      method: 'POST',
+      body: JSON.stringify({ title }),
+    });
+    return response?.session ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** One session. Returns null when it is unknown or the route is missing. */
+export async function fetchSession(
+  sessionId: string,
+): Promise<SessionDetail | null> {
+  try {
+    const response = await request<SessionResponse>(
+      `/sessions/${encodeURIComponent(sessionId)}`,
+    );
+    return response?.session ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Renames or archives a session. */
+export async function updateSession(
+  sessionId: string,
+  patch: { title?: string; archived?: boolean },
+): Promise<SessionDetail | null> {
+  try {
+    const response = await request<SessionResponse>(
+      `/sessions/${encodeURIComponent(sessionId)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      },
+    );
+    return response?.session ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Policies                                                                    */
+/* -------------------------------------------------------------------------- */
+
+/** One policy: a tool, optional argument matchers, and an effect. */
+export interface Policy {
+  id: string;
+  toolName: string;
+  /** Argument matchers, e.g. `{ "name": { "startsWith": "fix/" } }`. */
+  match?: Record<string, unknown> | null;
+  effect: 'allow' | 'ask' | 'deny' | string;
+  enabled?: boolean;
+  priority?: number;
+  label?: string;
+  /** Null for a global policy, a session id for a per-session one. */
+  sessionId?: string | null;
+  createdAt?: string;
+}
+
+export interface PoliciesResponse {
+  policies?: Policy[];
+}
+
+export interface PolicyResponse {
+  policy?: Policy;
+}
+
+/** The policies, global and per session. */
+export async function fetchPolicies(): Promise<Policy[]> {
+  try {
+    const response = await request<PoliciesResponse>('/policies');
+    return Array.isArray(response?.policies) ? response.policies : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Creates a policy. Returns null when the route is not there yet. */
+export async function createPolicy(
+  policy: Omit<Policy, 'id'>,
+): Promise<Policy | null> {
+  try {
+    const response = await request<PolicyResponse>('/policies', {
+      method: 'POST',
+      body: JSON.stringify(policy),
+    });
+    return response?.policy ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Edits a policy. */
+export async function updatePolicy(
+  policyId: string,
+  patch: Partial<Omit<Policy, 'id'>>,
+): Promise<Policy | null> {
+  try {
+    const response = await request<PolicyResponse>(
+      `/policies/${encodeURIComponent(policyId)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      },
+    );
+    return response?.policy ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Deletes a policy. */
+export async function deletePolicy(policyId: string): Promise<boolean> {
+  try {
+    await request(`/policies/${encodeURIComponent(policyId)}`, {
+      method: 'DELETE',
+    });
+    return true;
+  } catch {
+    return false;
   }
 }
 

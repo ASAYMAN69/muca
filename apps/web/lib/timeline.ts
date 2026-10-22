@@ -29,6 +29,7 @@ export type StepKind =
   | 'tool_call'
   | 'evidence'
   | 'approval'
+  | 'clarification'
   | 'outcome'
   | 'error';
 
@@ -51,6 +52,19 @@ export interface TimelineStep {
   callId?: string;
   /** True when the tool is destructive. */
   destructive?: boolean;
+  /** What the server knows about the permission it is asking for. */
+  permission?: {
+    title?: string;
+    description?: string;
+    reason?: string;
+    matchedPolicy?: string | null;
+  };
+  /** The question the agent asked, for clarification steps. */
+  clarification?: {
+    question: string;
+    options?: string[];
+    answer?: string;
+  };
 }
 
 export interface Timeline {
@@ -139,6 +153,13 @@ export function buildTimeline(input: {
   awaitingConfirmation?: boolean;
   runId?: string;
   destructiveTools?: Set<string>;
+  /**
+   * The calls that are still running.
+   *
+   * A live run knows a call is in flight; without this, a call whose
+   * result has not arrived yet would be reported as failed.
+   */
+  inFlightCallIds?: string[];
   /** The events the client did not understand, kept for the raw view. */
   unknownEvents?: unknown[];
 }): Timeline {
@@ -150,6 +171,8 @@ export function buildTimeline(input: {
   const callOrder: string[] = [];
   /** The last call the server asked for confirmation for. */
   let lastConfirmationCallId: string | undefined;
+  /** question id -> the step that carries it. */
+  const clarificationSteps = new Map<string, TimelineStep>();
 
   for (const [index, event] of input.events.entries()) {
     switch (event.type) {
@@ -193,6 +216,12 @@ export function buildTimeline(input: {
 
       case 'confirmation_required': {
         const call = calls.get(event.id);
+        const permission = {
+          title: event.title,
+          description: event.description,
+          reason: event.reason,
+          matchedPolicy: event.matchedPolicy,
+        };
         if (call) {
           // The tool call row is upgraded into the approval row rather
           // than becoming a second row for the same call.
@@ -205,6 +234,7 @@ export function buildTimeline(input: {
             ? titleForTool(event.name)
             : call.step.title;
           call.step.arguments = formatArguments(event.arguments);
+          call.step.permission = permission;
         } else {
           // The server asked for confirmation for a call we never saw
           // (a truncated event list). Keep it visible on its own row.
@@ -218,6 +248,7 @@ export function buildTimeline(input: {
             toolName: event.name,
             arguments: formatArguments(event.arguments),
             destructive: true,
+            permission,
           };
           steps.push(step);
           register(calls, callOrder, event.id, {
@@ -257,6 +288,38 @@ export function buildTimeline(input: {
         break;
       }
 
+      case 'clarification': {
+        const step: TimelineStep = {
+          id: `s-clarification-${event.id || index}`,
+          kind: 'clarification',
+          status: 'blocked',
+          title: 'The agent has a question',
+          summary: event.question,
+          callId: event.id,
+          clarification: {
+            question: event.question,
+            options: event.options,
+          },
+        };
+        steps.push(step);
+        clarificationSteps.set(event.id, step);
+        break;
+      }
+
+      case 'clarification_answered': {
+        const step = clarificationSteps.get(event.id);
+        if (step) {
+          step.status = 'success';
+          step.summary = event.answer;
+          step.clarification = {
+            question: step.clarification?.question ?? '',
+            options: step.clarification?.options,
+            answer: event.answer,
+          };
+        }
+        break;
+      }
+
       case 'error': {
         const step: TimelineStep = {
           id: `s-error-${index}`,
@@ -285,8 +348,15 @@ export function buildTimeline(input: {
     ? (input.pendingCall?.callId ?? lastConfirmationCallId)
     : undefined;
 
+  // A call that is still running is neither a success nor a failure.
+  const inFlight = new Set(input.inFlightCallIds ?? []);
+
   for (const callId of callOrder) {
-    resolve(calls.get(callId)!, callId === awaitedCallId);
+    resolve(
+      calls.get(callId)!,
+      callId === awaitedCallId,
+      inFlight.has(callId),
+    );
   }
 
   const outcome = input.text?.trim() ? input.text : undefined;
@@ -337,7 +407,7 @@ function lastUnresolved(
  *   - the call was declined: `rejected` (declined).
  *   - no decision and no result: `failed`.
  */
-function resolve(call: CallState, awaited: boolean): void {
+function resolve(call: CallState, awaited: boolean, inFlight: boolean): void {
   const step = call.step;
   // A call is an approval row when the server asked for confirmation *or*
   // when it recorded a decision for it.
@@ -351,6 +421,9 @@ function resolve(call: CallState, awaited: boolean): void {
       step.summary = call.error;
     } else if (call.hasResult) {
       step.status = 'success';
+    } else if (inFlight) {
+      // The tool is still running.
+      step.status = 'running';
     } else {
       step.status = 'failed';
       step.summary = 'The tool did not return a result.';
@@ -385,8 +458,10 @@ function resolve(call: CallState, awaited: boolean): void {
     return;
   }
 
-  step.status = call.hasResult ? 'success' : 'failed';
+  step.status = call.hasResult ? 'success' : inFlight ? 'running' : 'failed';
   step.summary = call.hasResult
     ? 'Approved by you. The tool ran.'
-    : 'The tool did not return a result.';
+    : inFlight
+      ? 'Approved by you. Running it now.'
+      : 'The tool did not return a result.';
 }

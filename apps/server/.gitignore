@@ -1,7 +1,10 @@
-# Local run history and other runtime state.
+# Local runtime state.
 #
-# The run history is written to `<repo root>/.muca/runs` by default (see
-# `src/store/run-history.ts`). The repository root `.gitignore` is owned by
-# the coordinator, so this file covers the same path from this app's side
-# as a belt-and-braces measure: the runtime state must never be committed.
+# The database lives at `~/.adh/database/muca.db` by default, outside the
+# repository, so there is normally nothing to ignore here. The paths below
+# cover the case where `MUCA_DATABASE_PATH` points inside the checkout:
+# the runtime state must never be committed.
 .muca/
+*.db
+*.db-wal
+*.db-shm

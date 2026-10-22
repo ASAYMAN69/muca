@@ -68,6 +68,10 @@ describe('parseAgentEvents', () => {
       name: 'create_branch',
       arguments: { name: 'fix/x' },
       message: 'Create branch (name="fix/x")',
+      title: undefined,
+      description: undefined,
+      reason: undefined,
+      matchedPolicy: null,
     });
   });
 
