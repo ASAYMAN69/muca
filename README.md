@@ -48,7 +48,7 @@ arguments you were shown.
 
 **MCP is the point, not a wrapper.** Muca is a real MCP server. Any MCP
 client — Claude Desktop, Amazon Q, anything — can connect to
-`/api/v1/mcp` and use its ten tools. The web page is just one client of
+`/api/v1/mcp` and use its seventeen tools. The web page is just one client of
 it, and it shows its own live session so you can see the protocol
 traffic rather than take it on trust.
 
@@ -132,9 +132,37 @@ the REST layer both derive from it, so they cannot drift apart.
 | `create_branch` | **yes** | **yes** | Creates the fix branch — needs approval |
 | `open_pull_request` | **yes** | **yes** | Opens the PR with the fix — needs approval |
 | `diagnose_incident` | no | no | **Task-backed**: correlates deployment + CI + issue, returns a diagnosis |
+| `get_pull_request` | no | no | One pull request: state, files, the diff, the review summary, the checks |
+| `list_pull_request_reviews` | no | no | The reviews: who, and what they asked for |
+| `list_pull_request_comments` | no | no | The review comments: file, line, body, resolved or not |
+| `list_workflow_runs` | no | no | The CI runs for a branch: green, failed (with the job and the log), queued |
+| `list_commits` | no | no | Recent commits, and the files each one touched |
+| `push_commit` | **yes** | no | Pushes a change to the branch — the diff, the commits and the CI all update |
+| `reply_to_review` | **yes** | no | Answers a reviewer and resolves their comment |
 
-`readOnlyHint` and `destructiveHint` are published honestly: six tools are
-read-only, four write, and exactly two are consequential.
+`readOnlyHint` and `destructiveHint` are published honestly: eleven tools
+are read-only, six write, and exactly two are consequential.
+
+### The loop closes
+
+Muca does not stop at "here is a pull request". It can read the pull
+request, read the review that asked for a change, **push the fix**, answer
+the reviewer, and check whether the CI went green:
+
+```
+get_pull_request      → PR #700, the files it changes, the diff, the checks
+list_pull_request_reviews
+                      → "changes_requested: this loads the customer twice —
+                         it is already on the session"
+push_commit           → the branch changes; the diff is recomputed, the
+                         commit list grows, the CI runs re-queue
+reply_to_review       → the comment becomes resolved
+list_workflow_runs    → the runs are queued, then green
+```
+
+The diff is **computed**, not written down: the mock holds the file
+contents of each branch and derives a real unified diff from them, so
+pushing the fix genuinely removes the offending hunk.
 
 `diagnose_incident` uses the MCP **Tasks** API: it returns a task handle
 immediately and the client polls `tasks/get` until it reaches a terminal

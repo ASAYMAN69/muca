@@ -105,6 +105,48 @@ const openPullRequestArgs = z.object({
   baseBranch: z.string().min(1).max(100).default('main'),
 });
 
+const getPullRequestArgs = z.object({
+  number: z.number().int().positive(),
+});
+
+const listPullRequestReviewsArgs = z.object({
+  number: z.number().int().positive(),
+});
+
+const listPullRequestCommentsArgs = z.object({
+  number: z.number().int().positive(),
+});
+
+const listWorkflowRunsArgs = z.object({
+  branch: z.string().min(1).max(100).optional(),
+  service: z.string().min(1).max(80).optional(),
+  limit: z.number().int().min(1).max(50).default(10),
+});
+
+const listCommitsArgs = z.object({
+  service: z.string().min(1).max(80).optional(),
+  branch: z.string().min(1).max(100).optional(),
+  limit: z.number().int().min(1).max(50).default(10),
+});
+
+const pushCommitArgs = z.object({
+  branch: z.string().min(1, 'branch must not be empty').max(100),
+  path: z.string().min(1, 'path must not be empty').max(200),
+  content: z.string().max(20000),
+  message: z.string().min(1, 'message must not be empty').max(200),
+  /** The pull request the commit belongs to, when it is known. */
+  number: z.number().int().positive().optional(),
+});
+
+const replyToReviewArgs = z.object({
+  number: z.number().int().positive(),
+  /** The review to answer. */
+  reviewId: z.string().min(1).max(120).optional(),
+  /** The review comment to answer. */
+  commentId: z.string().min(1).max(120).optional(),
+  body: z.string().min(1, 'body must not be empty').max(2000),
+});
+
 /* -------------------------------------------------------------------------- */
 /* Tools                                                                      */
 /* -------------------------------------------------------------------------- */
@@ -307,6 +349,259 @@ export function createOpsTools(adapters: OpsAdapters = createMockOpsAdapters()):
         return {
           summary: `Opened pull request #${pullRequest.number}: "${pullRequest.title}".`,
           data: pullRequest,
+        };
+      },
+    }),
+
+    /* ---------------------------------------------------------------- */
+    /* The fix loop: read the review, check the CI, push the fix       */
+    /* ---------------------------------------------------------------- */
+
+    defineTool({
+      name: 'get_pull_request',
+      title: 'Get pull request',
+      description:
+        'Fetch one pull request: its state, the branch it is on, the files it changes, ' +
+        'its diff, a summary of the reviews and a summary of the CI checks. ' +
+        'Use it before acting on a pull request, and again after you push a fix.',
+      schema: getPullRequestArgs,
+      handler: (args) => {
+        const pullRequest = adapters.pulls.get(args.number);
+        if (!pullRequest) {
+          throw new ToolError(`No pull request with number ${args.number}.`);
+        }
+        return {
+          summary:
+            `Pull request #${pullRequest.number} "${pullRequest.title}" is ${pullRequest.state} ` +
+            `(${pullRequest.branch} → ${pullRequest.baseBranch}), by ${pullRequest.author}.\n` +
+            `Files: ${pullRequest.files.length > 0 ? pullRequest.files.join(', ') : '(none)'}\n` +
+            `Reviews: ${pullRequest.reviewSummary ?? 'none'}\n` +
+            `Checks: ${pullRequest.checksSummary ?? 'none'}\n` +
+            `Diff:\n${pullRequest.diff || '(no changes)'}`,
+          data: pullRequest,
+        };
+      },
+    }),
+
+    defineTool({
+      name: 'list_pull_request_reviews',
+      title: 'List pull request reviews',
+      description:
+        'Every review on a pull request: who wrote it, whether it approved, requested ' +
+        'changes or just commented, what it says, and when. Use it to find out what the ' +
+        'reviewer asked for.',
+      schema: listPullRequestReviewsArgs,
+      handler: (args) => {
+        if (!adapters.pulls.get(args.number)) {
+          throw new ToolError(`No pull request with number ${args.number}.`);
+        }
+        const reviews = adapters.pulls.listReviews(args.number);
+        if (reviews.length === 0) {
+          return {
+            summary: `Pull request #${args.number} has no reviews yet.`,
+            data: { count: 0, number: args.number, reviews: [] },
+          };
+        }
+        const summary = reviews
+          .map((r) => `${r.reviewer} — ${r.state}: ${r.body}`)
+          .join('\n');
+        return {
+          summary: `${reviews.length} review(s) on pull request #${args.number}:\n${summary}`,
+          data: { count: reviews.length, number: args.number, reviews },
+        };
+      },
+    }),
+
+    defineTool({
+      name: 'list_pull_request_comments',
+      title: 'List pull request comments',
+      description:
+        'Every review comment on a pull request: the author, the file and the line it is ' +
+        'on, what it says, when, and whether it has been resolved. Use it to see exactly ' +
+        'which line the reviewer wants changed.',
+      schema: listPullRequestCommentsArgs,
+      handler: (args) => {
+        if (!adapters.pulls.get(args.number)) {
+          throw new ToolError(`No pull request with number ${args.number}.`);
+        }
+        const comments = adapters.pulls.listComments(args.number);
+        if (comments.length === 0) {
+          return {
+            summary: `Pull request #${args.number} has no review comments.`,
+            data: { count: 0, number: args.number, comments: [] },
+          };
+        }
+        const summary = comments
+          .map(
+            (c) =>
+              `${c.path}:${c.line} — ${c.author} (${c.resolved ? 'resolved' : 'open'}): ${c.body}`,
+          )
+          .join('\n');
+        const open = comments.filter((c) => !c.resolved).length;
+        return {
+          summary:
+            `${comments.length} review comment(s) on pull request #${args.number} ` +
+            `(${open} still open):\n${summary}`,
+          data: {
+            count: comments.length,
+            openCount: open,
+            number: args.number,
+            comments,
+          },
+        };
+      },
+    }),
+
+    defineTool({
+      name: 'list_workflow_runs',
+      title: 'List workflow runs',
+      description:
+        'The CI runs of a branch or a service: the name of the workflow, whether it is ' +
+        'queued, running, green or red, and — when it failed — the job and the step that ' +
+        'failed with the log excerpt. Use it to say whether the fix is green.',
+      schema: listWorkflowRunsArgs,
+      handler: (args) => {
+        const runs = adapters.ci.listRuns({
+          branch: args.branch,
+          service: args.service,
+          limit: args.limit,
+        });
+        if (runs.length === 0) {
+          return {
+            summary: 'No CI runs found.',
+            data: { count: 0, runs: [] },
+          };
+        }
+        const summary = runs
+          .map((run) => {
+            const state =
+              run.status === 'failure'
+                ? `failed at ${run.failedJob}/${run.failedStep}`
+                : run.status;
+            return `${run.runId} ${run.name} on ${run.branch}: ${state}`;
+          })
+          .join('\n');
+        return {
+          summary: `${runs.length} CI run(s):\n${summary}`,
+          data: { count: runs.length, runs },
+        };
+      },
+    }),
+
+    defineTool({
+      name: 'list_commits',
+      title: 'List commits',
+      description:
+        'The recent commits of a branch or a service: the sha, the message, the author, ' +
+        'when, the files each one touched, and the deployment it produced when there was ' +
+        'one. Use it to see what is already on a branch.',
+      schema: listCommitsArgs,
+      handler: (args) => {
+        const commits = adapters.git.listCommits({
+          branch: args.branch,
+          service: args.service,
+          limit: args.limit,
+        });
+        if (commits.length === 0) {
+          return {
+            summary: 'No commits found.',
+            data: { count: 0, commits: [] },
+          };
+        }
+        const summary = commits
+          .map(
+            (c) =>
+              `${c.sha} ${c.message} (${c.author}, ${c.createdAt}) — ${c.files.join(', ')}` +
+              `${c.deploymentId ? ` → deployment ${c.deploymentId}` : ''}`,
+          )
+          .join('\n');
+        return {
+          summary: `${commits.length} commit(s):\n${summary}`,
+          data: { count: commits.length, commits },
+        };
+      },
+    }),
+
+    defineTool({
+      name: 'push_commit',
+      title: 'Push commit',
+      description:
+        'Replace a file on a branch and record the commit. The file content is replaced, ' +
+        'the commit list grows, the pull request on that branch gets the new diff, and its ' +
+        'CI runs are queued again. Use it to push the change a reviewer asked for.',
+      schema: pushCommitArgs,
+      // It writes. The policy engine decides whether the user has to
+      // approve it, exactly as it does for every other write.
+      writes: true,
+      handler: (args) => {
+        const commit = adapters.git.pushCommit({
+          branch: args.branch,
+          path: args.path,
+          content: args.content,
+          message: args.message,
+        });
+
+        const pullRequest =
+          args.number !== undefined
+            ? adapters.pulls.get(args.number)
+            : adapters.pulls.getByBranch(args.branch);
+
+        return {
+          summary:
+            `Pushed ${commit.sha} to "${args.branch}": ${commit.message}\n` +
+            `Changed ${args.path}.\n` +
+            (pullRequest
+              ? `Pull request #${pullRequest.number} now changes: ` +
+                `${pullRequest.files.length > 0 ? pullRequest.files.join(', ') : '(nothing)'}\n` +
+                `Updated diff:\n${pullRequest.diff || '(no changes)'}`
+              : 'No pull request is open on that branch.'),
+          data: {
+            commit,
+            pullRequest: pullRequest ?? null,
+            files: pullRequest?.files ?? [],
+            diff: pullRequest?.diff ?? null,
+          },
+        };
+      },
+    }),
+
+    defineTool({
+      name: 'reply_to_review',
+      title: 'Reply to review',
+      description:
+        'Reply to a review or to a review comment on a pull request. Replying to a ' +
+        'review comment also marks it resolved. Use it to answer the reviewer after you ' +
+        'have pushed the change they asked for.',
+      schema: replyToReviewArgs,
+      // It writes.
+      writes: true,
+      handler: (args) => {
+        const reply = adapters.pulls.reply({
+          number: args.number,
+          reviewId: args.reviewId,
+          commentId: args.commentId,
+          body: args.body,
+        });
+
+        if (!reply) {
+          throw new ToolError(
+            args.commentId
+              ? `No review comment with id ${args.commentId} on pull request #${args.number}.`
+              : args.reviewId
+                ? `No review with id ${args.reviewId} on pull request #${args.number}.`
+                : `No pull request with number ${args.number}.`,
+          );
+        }
+
+        const target = reply.commentId
+          ? `comment ${reply.commentId}`
+          : reply.reviewId
+            ? `review ${reply.reviewId}`
+            : `pull request #${reply.number}`;
+
+        return {
+          summary: `Replied to ${target}: ${reply.body}`,
+          data: reply,
         };
       },
     }),

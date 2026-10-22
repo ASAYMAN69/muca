@@ -30,6 +30,11 @@ const READ_ONLY = [
   'get_ci_failure',
   'list_issues',
   'diagnose_incident',
+  'get_pull_request',
+  'list_pull_request_reviews',
+  'list_pull_request_comments',
+  'list_workflow_runs',
+  'list_commits',
 ];
 
 /** The tools that write. */
@@ -38,6 +43,8 @@ const WRITE = [
   'comment_on_issue',
   'create_branch',
   'open_pull_request',
+  'push_commit',
+  'reply_to_review',
 ];
 
 /** The tools that need the user's approval. */
@@ -66,6 +73,19 @@ describe('the catalogue axes', () => {
       expect(byName.get(name), `${name} is missing`).toBeDefined();
       expect(byName.get(name)!.writes, `${name} should write`).toBe(true);
     }
+  });
+
+  it('classifies every tool, and no others', () => {
+    const catalogue = buildCatalogue(
+      new ToolRegistry().registerAll(createTools()).list(),
+    );
+
+    const expected = [...READ_ONLY, ...WRITE].sort();
+    const actual = catalogue.map((entry) => entry.name).sort();
+
+    // The two lists together are the whole catalogue: a tool that is in
+    // neither would be published with a guess.
+    expect(actual).toEqual(expected);
   });
 
   it('keeps destructive exactly as it was', () => {
@@ -161,7 +181,7 @@ describe('the MCP annotations and the REST catalogue agree', () => {
     await new Promise<void>((resolve) => apiServer.close(() => resolve()));
   });
 
-  it('publishes readOnlyHint for exactly the six read-only tools', async () => {
+  it('publishes readOnlyHint for exactly the read-only tools', async () => {
     const client = new Client(
       { name: 'annotation-test-client', version: '0.1.0' },
       { capabilities: {} },

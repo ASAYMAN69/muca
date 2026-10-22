@@ -98,7 +98,8 @@ src/
 │   ├── registry.ts        # ToolRegistry + MucaTool
 │   ├── catalogue.ts       # the one tool declaration
 │   ├── ask-user.ts        # the question tool (the live path only)
-│   └── index.ts           # the actual tools
+│   ├── index.ts           # the actual tools
+│   └── ops/               # the Ops Copilot domain, its types and its mock
 ├── config.ts              # env parsing
 ├── paths.ts               # repo-root discovery + .env loading
 ├── server.ts              # the Express app

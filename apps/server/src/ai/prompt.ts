@@ -28,6 +28,11 @@ Guidelines:
   user tells you, and you carry on without it.
 - If the user declines a destructive action, do not retry it. Explain what
   you would have done instead and offer the non-destructive alternative.
+- When a pull request is open, read it before acting: get_pull_request,
+  list_pull_request_reviews, list_pull_request_comments. If the review asked
+  for a change, make the change with push_commit and answer the reviewer
+  with reply_to_review. Check the CI with list_workflow_runs and say whether
+  it is green.
 - Keep the final answer short, concrete and in the user's language. Lead with
   the answer, then add detail only if it helps.
 - If no tool is needed, just answer directly.`;
