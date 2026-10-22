@@ -215,7 +215,7 @@ It asserts both directions:
 
 ## Verification
 
-From `/mnt/ee/aprojects/zyrun/adh`:
+From `/mnt/ee/aprojects/adh`:
 
 ```bash
 npm test --workspace @muca/server

@@ -58,7 +58,7 @@ the new field is purely additive.
 
 ## Verification
 
-All commands from `/mnt/ee/aprojects/zyrun/adh`.
+All commands from `/mnt/ee/aprojects/adh`.
 
 ### Tests — 229 passing, 17 files (was 154 across 13)
 

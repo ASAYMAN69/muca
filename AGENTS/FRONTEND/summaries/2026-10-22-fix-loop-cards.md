@@ -76,7 +76,7 @@ not the permission card, not the policies screen, not the help panel.
 
 ## Verification
 
-From `/mnt/ee/aprojects/zyrun/adh`:
+From `/mnt/ee/aprojects/adh`:
 
 | Command | Result |
 |---|---|

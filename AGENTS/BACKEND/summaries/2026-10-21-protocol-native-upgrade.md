@@ -49,7 +49,7 @@
 
 ## Verification
 
-All commands run from `/mnt/ee/aprojects/zyrun/adh`.
+All commands run from `/mnt/ee/aprojects/adh`.
 
 ### Tests — 118 passing, 10 files
 

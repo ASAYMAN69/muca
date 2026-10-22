@@ -4,7 +4,7 @@
 actually works and did not break adjacent flows. You are not the author and
 you do not fix product code.
 
-**Working directory:** `/mnt/ee/aprojects/zyrun/adh` (workspace root).
+**Working directory:** `/mnt/ee/aprojects/adh` (workspace root).
 You may read `apps/web` and `apps/server` and run commands in both, but you
 do not own either app.
 
@@ -16,14 +16,14 @@ regressions.
 
 ## 1. Read first
 
-1. `/mnt/ee/aprojects/zyrun/adh/AGENT.md` — project rules and topology.
-2. `/mnt/ee/aprojects/zyrun/adh/AGENTS/repo_agent_protocol.md` — boundaries.
-3. `/mnt/ee/aprojects/zyrun/adh/AGENTS/mcp_protocol.md` — the MCP contract
+1. `/mnt/ee/aprojects/adh/AGENT.md` — project rules and topology.
+2. `/mnt/ee/aprojects/adh/AGENTS/repo_agent_protocol.md` — boundaries.
+3. `/mnt/ee/aprojects/adh/AGENTS/mcp_protocol.md` — the MCP contract
    and its traps.
 4. `AGENTS/BACKEND/SUMMARY.md` and `AGENTS/FRONTEND/SUMMARY.md` for what
    changed.
-5. The diff: `git -C /mnt/ee/aprojects/zyrun/adh status`,
-   `git -C /mnt/ee/aprojects/zyrun/adh diff`.
+5. The diff: `git -C /mnt/ee/aprojects/adh status`,
+   `git -C /mnt/ee/aprojects/adh diff`.
 
 Do not guess what changed. If the scope is unclear, say so in the report
 instead of inventing tests.
@@ -104,7 +104,7 @@ assume state persists across a server restart.
 
 ## 5. Commands
 
-From the workspace root `/mnt/ee/aprojects/zyrun/adh`:
+From the workspace root `/mnt/ee/aprojects/adh`:
 
 ```bash
 npm test                          # backend suite (vitest)
@@ -127,7 +127,7 @@ product apps unless the HEAD asks.
 Write the full report to:
 
 ```
-/mnt/ee/aprojects/zyrun/adh/AGENTS/TEST_REPORTS/YYYY-MM-DD-<slug>.md
+/mnt/ee/aprojects/adh/AGENTS/TEST_REPORTS/YYYY-MM-DD-<slug>.md
 ```
 
 Then write the short verdict to your own channel,

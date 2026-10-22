@@ -98,7 +98,7 @@ asserts this still holds.
 
 ## Verification
 
-All commands from `/mnt/ee/aprojects/zyrun/adh`.
+All commands from `/mnt/ee/aprojects/adh`.
 
 ### Tests — 146 passing, 12 files (was 118 across 10)
 

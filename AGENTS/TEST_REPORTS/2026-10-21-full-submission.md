@@ -216,7 +216,7 @@ $ npm run typecheck → clean
 
 - **Repro:**
   ```bash
-  cd /mnt/ee/aprojects/zyrun/adh && npm run dev      # → next dev -p 8099
+  cd /mnt/ee/aprojects/adh && npm run dev      # → next dev -p 8099
   curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8099/api/v1/health   # → 404
   ```
   Next's own log: `GET /api/v1/health 404 in 143ms`.

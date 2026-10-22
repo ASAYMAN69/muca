@@ -151,7 +151,7 @@ never in the browser — the server holds it.
 
 ## 5. Verification
 
-From the workspace root `/mnt/ee/aprojects/zyrun/adh`:
+From the workspace root `/mnt/ee/aprojects/adh`:
 
 ```bash
 npm run typecheck --workspace @adh/web

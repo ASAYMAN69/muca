@@ -14,10 +14,10 @@ its own session and working directory. They are **NOT** the `subagent` tool.
 
 | Agent | Working directory | Owns |
 |---|---|---|
-| HEAD | `/mnt/ee/aprojects/zyrun/adh` | Planning, task files, review, integration, commits |
-| FRONTEND | `/mnt/ee/aprojects/zyrun/adh/apps/web` | `apps/web` implementation only |
-| BACKEND | `/mnt/ee/aprojects/zyrun/adh/apps/server` | `apps/server` implementation only |
-| TESTER | `/mnt/ee/aprojects/zyrun/adh` | Independent verification of shipped changes; no product edits |
+| HEAD | `/mnt/ee/aprojects/adh` | Planning, task files, review, integration, commits |
+| FRONTEND | `/mnt/ee/aprojects/adh/apps/web` | `apps/web` implementation only |
+| BACKEND | `/mnt/ee/aprojects/adh/apps/server` | `apps/server` implementation only |
+| TESTER | `/mnt/ee/aprojects/adh` | Independent verification of shipped changes; no product edits |
 
 The user relays the HEAD's invocation message. The HEAD explicitly tells the
 user WHEN to invoke which agent and the exact message to send. Repo agents

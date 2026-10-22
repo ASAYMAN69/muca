@@ -166,7 +166,7 @@ mounts the new routers and runs the live path.
 
 ## Verification
 
-All commands from `/mnt/ee/aprojects/zyrun/adh`.
+All commands from `/mnt/ee/aprojects/adh`.
 
 ### Tests — 338 passing, 30 files (was 260 across 24)
 

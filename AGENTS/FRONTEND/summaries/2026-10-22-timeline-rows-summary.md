@@ -129,7 +129,7 @@ task said. The web script exists and passes:
 
 ## Verification
 
-From `/mnt/ee/aprojects/zyrun/adh`:
+From `/mnt/ee/aprojects/adh`:
 
 | Command | Result |
 |---|---|

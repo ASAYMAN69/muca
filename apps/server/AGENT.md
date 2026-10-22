@@ -146,7 +146,7 @@ src/
 
 ## 5. Verification
 
-From the workspace root `/mnt/ee/aprojects/zyrun/adh`:
+From the workspace root `/mnt/ee/aprojects/adh`:
 
 ```bash
 npm test --workspace @muca/server        # the vitest suite

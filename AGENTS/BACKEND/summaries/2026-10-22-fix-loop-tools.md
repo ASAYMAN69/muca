@@ -98,7 +98,7 @@ that a consequential tool is **called**, never asked about in prose:
 
 ## Verification
 
-All commands from `/mnt/ee/aprojects/zyrun/adh`.
+All commands from `/mnt/ee/aprojects/adh`.
 
 ### Tests — 359 passing, 32 files (was 342 across 31)
 

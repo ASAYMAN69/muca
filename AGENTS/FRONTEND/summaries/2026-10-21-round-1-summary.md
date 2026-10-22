@@ -154,7 +154,7 @@ message. The panel now publishes from the client's update callback via
 
 ## Verification
 
-All commands run from `/mnt/ee/aprojects/zyrun/adh`.
+All commands run from `/mnt/ee/aprojects/adh`.
 
 ```
 npm run typecheck --workspace @adh/web   # clean
