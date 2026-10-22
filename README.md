@@ -48,7 +48,7 @@ arguments you were shown.
 
 **MCP is the point, not a wrapper.** Muca is a real MCP server. Any MCP
 client — Claude Desktop, Amazon Q, anything — can connect to
-`/api/v1/mcp` and use its seventeen tools. The web page is just one client of
+`/api/v1/mcp` and use its eighteen tools. The web page is just one client of
 it, and it shows its own live session so you can see the protocol
 traffic rather than take it on trust.
 
@@ -161,6 +161,7 @@ the REST layer both derive from it, so they cannot drift apart.
 | `create_branch` | **yes** | **yes** | Creates the fix branch — needs approval |
 | `open_pull_request` | **yes** | **yes** | Opens the PR with the fix — needs approval |
 | `diagnose_incident` | no | no | **Task-backed**: correlates deployment + CI + issue, returns a diagnosis |
+| `list_pull_requests` | no | no | Every pull request, with state, files, reviews and checks — no number needed |
 | `get_pull_request` | no | no | One pull request: state, files, the diff, the review summary, the checks |
 | `list_pull_request_reviews` | no | no | The reviews: who, and what they asked for |
 | `list_pull_request_comments` | no | no | The review comments: file, line, body, resolved or not |

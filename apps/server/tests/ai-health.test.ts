@@ -122,7 +122,7 @@ describe('the AI gateway REST surface', () => {
     const response = await fetch(`${baseUrl}/health`);
     const body = (await response.json()) as HealthBody;
 
-    expect(body.tools).toHaveLength(17);
+    expect(body.tools).toHaveLength(18);
     expect(body.tools.map((t) => t.name)).toContain('diagnose_incident');
   });
 

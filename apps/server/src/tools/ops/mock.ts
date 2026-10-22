@@ -834,6 +834,18 @@ export function createMockOpsAdapters(options: MockOpsOptions = {}): OpsAdapters
     },
 
     pulls: {
+      list(state?: PullRequest['state']): PullRequest[] {
+        const list = state
+          ? pullRequests.filter((p) => p.state === state)
+          : pullRequests;
+        return [...list]
+          .sort((a, b) => b.number - a.number)
+          .map((pullRequest) => ({
+            ...pullRequest,
+            reviewSummary: summariseReviews(pullRequest.number),
+            checksSummary: summariseChecks(pullRequest.branch),
+          }));
+      },
       get(number: number): PullRequest | undefined {
         const pullRequest = pullRequests.find((p) => p.number === number);
         if (!pullRequest) return undefined;

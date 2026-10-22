@@ -30,6 +30,7 @@ const READ_ONLY = [
   'get_ci_failure',
   'list_issues',
   'diagnose_incident',
+  'list_pull_requests',
   'get_pull_request',
   'list_pull_request_reviews',
   'list_pull_request_comments',

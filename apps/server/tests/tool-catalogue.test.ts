@@ -135,7 +135,7 @@ describe('the tool catalogue is one source of truth', () => {
     expect(healthBody.tools).toHaveLength(mcpNames.length);
 
     // 9 registry tools + 1 task-backed tool.
-    expect(mcpNames).toHaveLength(17);
+    expect(mcpNames).toHaveLength(18);
   });
 
   it('reports the same tool names on all three surfaces', async () => {
@@ -247,7 +247,7 @@ describe('the catalogue module', () => {
       expect(names).toContain(name);
     }
     expect(names).toContain('diagnose_incident');
-    expect(catalogue).toHaveLength(17);
+    expect(catalogue).toHaveLength(18);
   });
 
   it('marks only the task-backed tools as task-backed', () => {

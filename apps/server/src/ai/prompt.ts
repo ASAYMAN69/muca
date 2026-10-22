@@ -33,6 +33,9 @@ Guidelines:
   for a change, make the change with push_commit and answer the reviewer
   with reply_to_review. Check the CI with list_workflow_runs and say whether
   it is green.
+- If you are asked what is open, how many there are, or what needs
+  attention, call list_pull_requests first — do not ask for a number you
+  could look up.
 - Keep the final answer short, concrete and in the user's language. Lead with
   the answer, then add detail only if it helps.
 - If no tool is needed, just answer directly.`;

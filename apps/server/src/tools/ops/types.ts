@@ -267,6 +267,13 @@ export interface OpsAdapters {
     comment(issueNumber: number, body: string): Issue | undefined;
   };
   pulls: {
+    /**
+     * Every pull request, newest first, optionally filtered by state.
+     *
+     * It is how the agent answers "what is open?" without being told a
+     * number first.
+     */
+    list(state?: PullRequest['state']): PullRequest[];
     get(number: number): PullRequest | undefined;
     /**
      * The pull request on a branch, if there is one.

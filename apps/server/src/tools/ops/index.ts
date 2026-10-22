@@ -109,6 +109,10 @@ const getPullRequestArgs = z.object({
   number: z.number().int().positive(),
 });
 
+const listPullRequestsArgs = z.object({
+  state: z.enum(['open', 'merged', 'closed']).optional(),
+});
+
 const listPullRequestReviewsArgs = z.object({
   number: z.number().int().positive(),
 });
@@ -356,6 +360,41 @@ export function createOpsTools(adapters: OpsAdapters = createMockOpsAdapters()):
     /* ---------------------------------------------------------------- */
     /* The fix loop: read the review, check the CI, push the fix       */
     /* ---------------------------------------------------------------- */
+
+    defineTool({
+      name: 'list_pull_requests',
+      title: 'List pull requests',
+      description:
+        'List pull requests, newest first, with their state, branch, files, review and ' +
+        'CI summaries. Use it when asked what is open, how many there are, or what needs ' +
+        'attention — you do not need a number first.',
+      schema: listPullRequestsArgs,
+      handler: (args) => {
+        const pullRequests = adapters.pulls.list(args.state);
+        if (pullRequests.length === 0) {
+          return {
+            summary: args.state
+              ? `There are no ${args.state} pull requests.`
+              : 'There are no pull requests.',
+            data: { count: 0, pullRequests: [] },
+          };
+        }
+        const summary = pullRequests
+          .map(
+            (p) =>
+              `#${p.number} ${p.title} — ${p.state}, ${p.branch} → ${p.baseBranch}, ` +
+              `by ${p.author}\n` +
+              `  files: ${p.files.length > 0 ? p.files.join(', ') : '(none)'}\n` +
+              `  reviews: ${p.reviewSummary ?? 'none'}\n` +
+              `  checks: ${p.checksSummary ?? 'none'}`,
+          )
+          .join('\n');
+        return {
+          summary: `${pullRequests.length} pull request(s):\n${summary}`,
+          data: { count: pullRequests.length, pullRequests },
+        };
+      },
+    }),
 
     defineTool({
       name: 'get_pull_request',

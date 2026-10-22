@@ -53,6 +53,30 @@ export function loadCart(session: Session): Cart {
 `;
 
 describe('the pull request tools', () => {
+  it('lists the open pull requests without being told a number', async () => {
+    const { call } = build();
+
+    const result = await call('list_pull_requests', { state: 'open' });
+    const data = result.data as {
+      count: number;
+      pullRequests: Array<{
+        number: number;
+        state: string;
+        files: string[];
+        checksSummary?: string;
+      }>;
+    };
+
+    expect(data.count).toBe(1);
+    expect(data.pullRequests[0]?.number).toBe(700);
+    expect(data.pullRequests[0]?.files.length).toBeGreaterThan(0);
+    expect(data.pullRequests[0]?.checksSummary).toContain('failed');
+
+    // A state with nothing in it is an empty list, not an error.
+    const merged = await call('list_pull_requests', { state: 'merged' });
+    expect((merged.data as { count: number }).count).toBe(0);
+  });
+
   it('reads the seeded pull request', async () => {
     const { call } = build();
 
