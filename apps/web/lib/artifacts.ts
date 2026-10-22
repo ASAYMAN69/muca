@@ -28,6 +28,33 @@ export interface ArtifactField {
   block?: boolean;
 }
 
+/**
+ * A row inside a card.
+ *
+ * Some results are lists of things that each deserve a line: a review, a
+ * comment, a CI run, a commit. A row carries its own badge, because the
+ * badge is the point: which review asked for a change, which run is red.
+ */
+export interface ArtifactRow {
+  /** The row's heading: the reviewer, the workflow name, the message. */
+  title: string;
+  /** A quiet line under the heading. */
+  meta?: string;
+  /** A status badge. The label carries the meaning, not only the colour. */
+  badge?: {
+    label: string;
+    tone: 'success' | 'failed' | 'warn' | 'neutral';
+  };
+  /** A short paragraph. */
+  body?: string;
+  /** A monospace block that scrolls sideways and never reflows. */
+  code?: string;
+  /** Small key/value rows. */
+  fields?: ArtifactField[];
+  /** Short monospace lines. */
+  lines?: string[];
+}
+
 export interface Artifact {
   /** A stable id, so React can key the card. */
   id: string;
@@ -40,6 +67,10 @@ export interface Artifact {
   body?: string;
   /** Optional list of lines — log tails, job lists. */
   lines?: string[];
+  /** A monospace block: a diff. It scrolls sideways and never reflows. */
+  code?: string;
+  /** Rows: reviews, comments, CI runs, commits. */
+  rows?: ArtifactRow[];
   /** The raw data, for the expandable section. */
   raw?: unknown;
 }
@@ -188,6 +219,20 @@ function buildSpecificCard(
       return branchCard(id, data);
     case 'open_pull_request':
       return pullRequestCard(id, data);
+    case 'get_pull_request':
+      return pullRequestDetailCard(id, data);
+    case 'list_pull_request_reviews':
+      return reviewListCard(id, data);
+    case 'list_pull_request_comments':
+      return reviewCommentListCard(id, data);
+    case 'reply_to_review':
+      return reviewReplyCard(id, data);
+    case 'list_workflow_runs':
+      return workflowRunListCard(id, data);
+    case 'list_commits':
+      return commitListCard(id, data);
+    case 'push_commit':
+      return pushCommitCard(id, data);
     case 'diagnose_incident':
       return incidentCard(id, data);
     default:
@@ -367,6 +412,376 @@ function incidentCard(id: string, data: Record<string, unknown>): Artifact {
     lines: Array.isArray(data.evidence)
       ? (data.evidence as string[]).map((line) => `• ${line}`)
       : undefined,
+    raw: data,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* The fix loop: pull requests, reviews, CI runs, commits                     */
+/* -------------------------------------------------------------------------- */
+
+/** The base branch of a pull request, whichever name it arrived under. */
+function baseOf(data: Record<string, unknown>): string {
+  return text(data.baseBranch ?? data.base);
+}
+
+/** The file a review comment is on, whichever name it arrived under. */
+function pathOf(data: Record<string, unknown>): string {
+  return text(data.path ?? data.file);
+}
+
+/**
+ * A pull request, with its diff.
+ *
+ * The diff is the point: it is what a reviewer reads, so it gets its own
+ * monospace block that scrolls sideways and never reflows.
+ */
+function pullRequestDetailCard(
+  id: string,
+  data: Record<string, unknown>,
+): Artifact {
+  const files = Array.isArray(data.files) ? (data.files as string[]) : [];
+  const fields: ArtifactField[] = [
+    { label: 'State', value: text(data.state) },
+    { label: 'Author', value: text(data.author) },
+    { label: 'Files', value: files.length > 0 ? String(files.length) : '—' },
+  ];
+  if (data.reviewSummary) {
+    fields.push({ label: 'Reviews', value: text(data.reviewSummary) });
+  }
+  if (data.checksSummary) {
+    fields.push({ label: 'Checks', value: text(data.checksSummary) });
+  }
+  if (data.url) {
+    fields.push({ label: 'URL', value: text(data.url), mono: true, block: true });
+  }
+
+  return {
+    id,
+    kind: 'pull-request-detail',
+    title: `PR #${text(data.number)} · ${text(data.title)}`,
+    subtitle: `${text(data.branch)} → ${baseOf(data)}`,
+    status: data.state === 'open' ? 'success' : 'neutral',
+    fields,
+    body: typeof data.body === 'string' ? data.body : undefined,
+    lines: files.length > 0 ? files : undefined,
+    code: typeof data.diff === 'string' ? data.diff : undefined,
+    raw: data,
+  };
+}
+
+/** A commit that was pushed, with the diff it produced. */
+function pushCommitCard(id: string, data: Record<string, unknown>): Artifact {
+  // The server returns the commit, the pull request it belongs to, the
+  // files it changed and the updated diff.
+  const commit = isRecord(data.commit) ? data.commit : {};
+  const pullRequest = isRecord(data.pullRequest) ? data.pullRequest : null;
+  const commitFiles = Array.isArray(commit.files)
+    ? (commit.files as string[])
+    : [];
+  const files = Array.isArray(data.files)
+    ? (data.files as string[])
+    : commitFiles;
+
+  const path =
+    typeof data.path === 'string'
+      ? data.path
+      : typeof data.file === 'string'
+        ? data.file
+        : '';
+
+  const fields: ArtifactField[] = [
+    { label: 'Commit', value: text(commit.sha ?? data.sha), mono: true },
+    {
+      label: 'File',
+      value: path || commitFiles[0] || files[0] || '—',
+      mono: true,
+    },
+  ];
+  if (pullRequest?.number) {
+    fields.push({
+      label: 'Pull request',
+      value: `#${text(pullRequest.number)}`,
+      mono: true,
+    });
+  }
+  if (commit.branch ?? data.branch) {
+    fields.push({
+      label: 'Branch',
+      value: text(commit.branch ?? data.branch),
+      mono: true,
+    });
+  }
+
+  return {
+    id,
+    kind: 'commit-pushed',
+    title: `Pushed ${text(commit.sha ?? data.sha)}`,
+    subtitle: text(commit.message ?? data.message) || undefined,
+    status: 'success',
+    fields,
+    lines: files.length > 0 ? files : undefined,
+    code:
+      typeof data.diff === 'string'
+        ? data.diff
+        : typeof commit.diff === 'string'
+          ? commit.diff
+          : undefined,
+    raw: data,
+  };
+}
+
+/** The badge of a review: the state, in words and in colour. */
+function reviewBadge(state: string): ArtifactRow['badge'] {
+  switch (state) {
+    case 'approved':
+      return { label: 'approved', tone: 'success' };
+    case 'changes_requested':
+    case 'changes requested':
+      return { label: 'changes requested', tone: 'failed' };
+    case 'commented':
+      return { label: 'commented', tone: 'neutral' };
+    case 'dismissed':
+      return { label: 'dismissed', tone: 'neutral' };
+    default:
+      return { label: state || 'unknown', tone: 'neutral' };
+  }
+}
+
+/** Every review on a pull request, one row each. */
+function reviewListCard(
+  id: string,
+  data: Record<string, unknown>,
+): Artifact | null {
+  const reviews = Array.isArray(data.reviews) ? data.reviews : null;
+  if (!reviews) return null;
+  const changes = reviews.filter(
+    (review) =>
+      isRecord(review) &&
+      (review.state === 'changes_requested' ||
+        review.state === 'changes requested'),
+  ).length;
+
+  return {
+    id,
+    kind: 'review-list',
+    title: 'Reviews',
+    subtitle:
+      changes > 0
+        ? `${reviews.length} review${reviews.length === 1 ? '' : 's'} · ${changes} asked for changes`
+        : `${reviews.length} review${reviews.length === 1 ? '' : 's'}`,
+    status: changes > 0 ? 'failed' : 'success',
+    fields: [],
+    rows: reviews.map((review): ArtifactRow => {
+      if (!isRecord(review)) {
+        return { title: text(review) };
+      }
+      const state = text(review.state);
+      return {
+        title: text(review.reviewer ?? review.user ?? review.author),
+        meta: text(review.when ?? review.createdAt ?? review.submittedAt),
+        badge: reviewBadge(state),
+        body: typeof review.body === 'string' ? review.body : undefined,
+      };
+    }),
+    raw: data,
+  };
+}
+
+/** Every review comment on a pull request, one row each. */
+function reviewCommentListCard(
+  id: string,
+  data: Record<string, unknown>,
+): Artifact | null {
+  const comments = Array.isArray(data.comments) ? data.comments : null;
+  if (!comments) return null;
+  const resolved = comments.filter(
+    (comment) => isRecord(comment) && comment.resolved === true,
+  ).length;
+
+  return {
+    id,
+    kind: 'review-comment-list',
+    title: 'Review comments',
+    subtitle: `${comments.length} comment${comments.length === 1 ? '' : 's'} · ${resolved} resolved`,
+    status: 'neutral',
+    fields: [],
+    rows: comments.map((comment): ArtifactRow => {
+      if (!isRecord(comment)) {
+        return { title: text(comment) };
+      }
+      const path = pathOf(comment);
+      const line = text(comment.line);
+      return {
+        title: text(comment.author ?? comment.user),
+        meta: path ? `${path}${line && line !== '—' ? `:${line}` : ''}` : line,
+        badge:
+          comment.resolved === true
+            ? { label: 'resolved', tone: 'success' }
+            : { label: 'open', tone: 'warn' },
+        body: typeof comment.body === 'string' ? comment.body : undefined,
+      };
+    }),
+    raw: data,
+  };
+}
+
+/** The reply the agent left on a review. */
+function reviewReplyCard(id: string, data: Record<string, unknown>): Artifact {
+  const reply = isRecord(data.reply) ? data.reply : data;
+  const commentId = text(reply.commentId);
+  const reviewId = text(reply.reviewId);
+  const answered = commentId || reviewId;
+  const fields: ArtifactField[] = [];
+  if (reply.number) {
+    fields.push({
+      label: 'Pull request',
+      value: `#${text(reply.number)}`,
+      mono: true,
+    });
+  }
+  if (answered) {
+    fields.push({ label: 'Answered', value: answered, mono: true });
+  }
+  if (reply.author) {
+    fields.push({ label: 'Author', value: text(reply.author) });
+  }
+  if (reply.when ?? reply.createdAt ?? data.when) {
+    fields.push({
+      label: 'When',
+      value: text(reply.when ?? reply.createdAt ?? data.when),
+      mono: true,
+    });
+  }
+
+  // Replying to a review comment resolves it; that is the server's rule.
+  const resolved =
+    data.resolved === true ||
+    reply.resolved === true ||
+    Boolean(commentId) ||
+    (isRecord(data.comment) && data.comment.resolved === true);
+
+  return {
+    id,
+    kind: 'review-reply',
+    title: 'Replied to the reviewer',
+    subtitle: answered ? `on ${answered}` : undefined,
+    status: 'success',
+    fields,
+    body: typeof reply.body === 'string' ? reply.body : undefined,
+    rows: resolved
+      ? [
+          {
+            title: 'The comment is resolved',
+            badge: { label: 'resolved', tone: 'success' },
+          },
+        ]
+      : undefined,
+    raw: data,
+  };
+}
+
+/** The CI runs for a branch: one row each, with the failure when it failed. */
+function workflowRunListCard(
+  id: string,
+  data: Record<string, unknown>,
+): Artifact | null {
+  const runs = Array.isArray(data.runs) ? data.runs : null;
+  if (!runs) return null;
+  const failed = runs.filter(
+    (run) => isRecord(run) && (run.status === 'failure' || run.status === 'failed'),
+  ).length;
+
+  return {
+    id,
+    kind: 'workflow-run-list',
+    title: 'CI runs',
+    subtitle: `${runs.length} run${runs.length === 1 ? '' : 's'}${failed > 0 ? ` · ${failed} failed` : ''}`,
+    status: failed > 0 ? 'failed' : 'success',
+    fields: [],
+    rows: runs.map((run): ArtifactRow => {
+      if (!isRecord(run)) {
+        return { title: text(run) };
+      }
+      const status = text(run.status);
+      const tone: ArtifactRow['badge'] =
+        status === 'success'
+          ? { label: 'success', tone: 'success' }
+          : status === 'failure' || status === 'failed'
+            ? { label: 'failure', tone: 'failed' }
+            : status === 'running'
+              ? { label: 'running', tone: 'warn' }
+              : { label: status || 'queued', tone: 'warn' };
+
+      const row: ArtifactRow = {
+        title: text(run.name ?? run.workflow),
+        meta: [text(run.runId), text(run.branch)].filter(Boolean).join(' · '),
+        badge: tone,
+      };
+
+      const failedJob =
+        typeof run.failedJob === 'string' ? run.failedJob : '';
+      const failedStep =
+        typeof run.failedStep === 'string' ? run.failedStep : '';
+      if (failedJob || failedStep) {
+        row.fields = [
+          { label: 'Failed job', value: failedJob || '—', mono: true },
+          { label: 'Failed step', value: failedStep || '—', mono: true },
+        ];
+      }
+      if (run.error) {
+        row.body = text(run.error);
+      }
+      if (Array.isArray(run.logExcerpt)) {
+        row.code = (run.logExcerpt as string[]).join('\n');
+      }
+      return row;
+    }),
+    raw: data,
+  };
+}
+
+/** The recent commits: a compact list. */
+function commitListCard(
+  id: string,
+  data: Record<string, unknown>,
+): Artifact | null {
+  const commits = Array.isArray(data.commits) ? data.commits : null;
+  if (!commits) return null;
+
+  return {
+    id,
+    kind: 'commit-list',
+    title: 'Commits',
+    subtitle: `${commits.length} commit${commits.length === 1 ? '' : 's'}`,
+    status: 'neutral',
+    fields: [],
+    rows: commits.map((commit): ArtifactRow => {
+      if (!isRecord(commit)) {
+        return { title: text(commit) };
+      }
+      const files = Array.isArray(commit.files)
+        ? (commit.files as string[])
+        : undefined;
+      const meta = [
+        text(commit.sha),
+        text(commit.author),
+        text(commit.when ?? commit.createdAt),
+      ]
+        .filter(Boolean)
+        .join(' · ');
+      const row: ArtifactRow = {
+        title: text(commit.message),
+        meta,
+        lines: files,
+      };
+      if (commit.deploymentId) {
+        row.fields = [
+          { label: 'Deployment', value: text(commit.deploymentId), mono: true },
+        ];
+      }
+      return row;
+    }),
     raw: data,
   };
 }

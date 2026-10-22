@@ -2,7 +2,7 @@
 
 import { useId, useState } from 'react';
 
-import type { Artifact, ArtifactStatus } from '../../lib/artifacts';
+import type { Artifact, ArtifactRow, ArtifactStatus } from '../../lib/artifacts';
 
 const STATUS_TONE: Record<ArtifactStatus, string> = {
   success: 'border-good-line bg-good-soft text-good',
@@ -85,6 +85,16 @@ export function ArtifactCard({ artifact }: { artifact: Artifact }) {
         </dl>
       ) : null}
 
+      {artifact.rows && artifact.rows.length > 0 ? (
+        <ul className="divide-y divide-line border-t border-line">
+          {artifact.rows.map((row, index) => (
+            <li key={`${row.title}-${index}`} className="px-3.5 py-3">
+              <ArtifactRowView row={row} />
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
       {artifact.body ? (
         <pre className="mx-3.5 mb-3 overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-surface-sunken px-3 py-2 font-mono text-[11px] leading-relaxed text-ink-muted">
           {artifact.body}
@@ -102,6 +112,12 @@ export function ArtifactCard({ artifact }: { artifact: Artifact }) {
             </li>
           ))}
         </ul>
+      ) : null}
+
+      {artifact.code ? (
+        <pre className="mx-3.5 mb-3 max-h-72 overflow-auto whitespace-pre rounded-md bg-surface-sunken px-3 py-2 font-mono text-[11px] leading-relaxed text-ink-muted">
+          {artifact.code}
+        </pre>
       ) : null}
 
       {artifact.raw !== undefined ? (
@@ -129,6 +145,88 @@ export function ArtifactCard({ artifact }: { artifact: Artifact }) {
         </div>
       ) : null}
     </article>
+  );
+}
+
+const BADGE_TONE: Record<NonNullable<ArtifactRow['badge']>['tone'], string> = {
+  success: 'border-good-line bg-good-soft text-good',
+  failed: 'border-bad-line bg-bad-soft text-bad',
+  warn: 'border-warn-line bg-warn-soft text-warn',
+  neutral: 'border-line bg-surface-sunken text-ink-muted',
+};
+
+/**
+ * One row of a card: a review, a comment, a CI run, a commit.
+ *
+ * The badge carries a word, not only a colour: "changes requested" has to
+ * be readable without relying on the hue.
+ */
+function ArtifactRowView({ row }: { row: ArtifactRow }) {
+  return (
+    <div className="min-w-0">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className="min-w-0 flex-1 text-[12.5px] font-medium text-ink">
+          {row.title}
+        </span>
+        {row.badge ? (
+          <span
+            className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${BADGE_TONE[row.badge.tone]}`}
+          >
+            {row.badge.label}
+          </span>
+        ) : null}
+      </div>
+
+      {row.meta ? (
+        <p className="mt-0.5 truncate font-mono text-[11px] text-ink-faint">
+          {row.meta}
+        </p>
+      ) : null}
+
+      {row.body ? (
+        <p className="mt-1.5 text-[12px] leading-relaxed text-ink-muted">
+          {row.body}
+        </p>
+      ) : null}
+
+      {row.fields && row.fields.length > 0 ? (
+        <dl className="mt-1.5 grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
+          {row.fields.map((field) => (
+            <div key={field.label} className="min-w-0">
+              <dt className="text-[10px] font-medium uppercase tracking-[0.12em] text-ink-faint">
+                {field.label}
+              </dt>
+              <dd
+                className={`truncate text-[11.5px] text-ink ${
+                  field.mono ? 'font-mono' : ''
+                }`}
+              >
+                {field.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+
+      {row.lines && row.lines.length > 0 ? (
+        <ul className="mt-1.5 space-y-0.5">
+          {row.lines.map((line, index) => (
+            <li
+              key={`${index}-${line.slice(0, 24)}`}
+              className="truncate font-mono text-[11px] text-ink-muted"
+            >
+              {line}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {row.code ? (
+        <pre className="mt-2 max-h-64 overflow-auto whitespace-pre rounded-md bg-surface-sunken px-3 py-2 font-mono text-[11px] leading-relaxed text-ink-muted">
+          {row.code}
+        </pre>
+      ) : null}
+    </div>
   );
 }
 
