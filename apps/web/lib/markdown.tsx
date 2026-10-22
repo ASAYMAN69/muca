@@ -55,6 +55,75 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
   return nodes;
 }
 
+/**
+ * Splits a table row into its cells.
+ *
+ * A leading and trailing pipe are optional, so `a | b` and `| a | b |`
+ * are the same row.
+ */
+function splitRow(line: string): string[] {
+  const trimmed = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+  return trimmed.split('|').map((cell) => cell.trim());
+}
+
+/** True when a row is the `|---|---|` separator under a header. */
+function isSeparatorRow(line: string): boolean {
+  const cells = splitRow(line);
+  return cells.length > 0 && cells.every((cell) => /^:?-{1,}:?$/.test(cell));
+}
+
+/**
+ * True when a block is a table: every line has a pipe, and the second
+ * line is the separator.
+ */
+function isTable(lines: string[]): boolean {
+  if (lines.length < 2) return false;
+  if (!lines.every((line) => line.includes('|'))) return false;
+  return isSeparatorRow(lines[1]);
+}
+
+/** Renders a markdown table. */
+function renderTable(lines: string[], keyPrefix: string): ReactNode {
+  const header = splitRow(lines[0]!);
+  const rows = lines.slice(2).map(splitRow);
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse text-left text-[13px]">
+        <thead>
+          <tr className="border-b border-line">
+            {header.map((cell, index) => (
+              <th
+                key={`th-${keyPrefix}-${index}`}
+                className="whitespace-nowrap px-2.5 py-1.5 font-semibold text-ink"
+              >
+                {renderInline(cell, `th-${keyPrefix}-${index}`)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, rowIndex) => (
+            <tr
+              key={`tr-${keyPrefix}-${rowIndex}`}
+              className="border-b border-line/60 last:border-0"
+            >
+              {row.map((cell, cellIndex) => (
+                <td
+                  key={`td-${keyPrefix}-${rowIndex}-${cellIndex}`}
+                  className="px-2.5 py-1.5 align-top text-ink-muted"
+                >
+                  {renderInline(cell, `td-${keyPrefix}-${rowIndex}-${cellIndex}`)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 /** Renders a block of markdown into paragraphs and lists. */
 export function renderMarkdown(source: string): ReactNode {
   const blocks = source.split(/\n{2,}/);
@@ -66,6 +135,15 @@ export function renderMarkdown(source: string): ReactNode {
 
     const lines = trimmed.split('\n');
     const isList = lines.every((line) => line.trimStart().startsWith('- '));
+
+    if (isTable(lines)) {
+      out.push(
+        <div key={`table-${blockIndex}`} className="my-1">
+          {renderTable(lines, `t${blockIndex}`)}
+        </div>,
+      );
+      return;
+    }
 
     if (isList) {
       out.push(
