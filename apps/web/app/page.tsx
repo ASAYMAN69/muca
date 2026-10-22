@@ -22,8 +22,7 @@ import {
   type Policy,
   type SessionSummary,
   type TaskSnapshot,
-  type ToolSummary,
-} from '../lib/api';
+  type ToolSummary, updateSession } from '../lib/api';
 import { buildArtifact, type Artifact } from '../lib/artifacts';
 import {
   DEMO_APPROVED_EVENTS,
@@ -40,7 +39,6 @@ import { buildTimeline, type TimelineStep } from '../lib/timeline';
 import { HelpPanel } from './components/help-panel';
 import { McpDetails, McpStatusPill, useMcpSession } from './components/mcp-panel';
 import { PoliciesView } from './components/policies-view';
-import { RunHistoryPanel } from './components/run-history';
 import { SessionSidebar } from './components/session-sidebar';
 import { ThinkingRow } from './components/thinking-row';
 import { TimelineView } from './components/timeline';
@@ -123,6 +121,19 @@ export default function Home() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [sessionsAvailable, setSessionsAvailable] = useState(true);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  /**
+   * The live session id.
+   *
+   * The state is not enough: a callback can close over a session list
+   * that has not caught up yet, and then it would create a second
+   * session for a session that already exists. The ref is always
+   * current.
+   */
+  const sessionIdRef = useRef<string | null>(null);
+  const setActiveSession = useCallback((id: string | null) => {
+    sessionIdRef.current = id;
+    setSessionId(id);
+  }, []);
 
   /* The shell */
   const [view, setView] = useState<View>('timeline');
@@ -174,16 +185,16 @@ export default function Home() {
       if (list === null) {
         // The server has no session list yet: one local session.
         setSessionsAvailable(false);
-        setSessionId((current) => current ?? localSessionId());
+        setActiveSession(sessionIdRef.current ?? localSessionId());
         return;
       }
       setSessions(list);
-      setSessionId((current) => current ?? list[0]?.id ?? localSessionId());
+      setActiveSession(sessionIdRef.current ?? list[0]?.id ?? localSessionId());
     });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [setActiveSession]);
 
   /* The policies. The route may not exist yet either. */
   useEffect(() => {
@@ -361,17 +372,17 @@ export default function Home() {
   /* ---------------------------------------------------------------------- */
 
   const selectSession = useCallback((id: string) => {
-    setSessionId(id);
+    setActiveSession(id);
     setRuns([]);
     setView('timeline');
     setSidebarOpen(false);
-  }, []);
+  }, [setActiveSession]);
 
   const newSession = useCallback(async () => {
     const created = await createSession('');
     if (created) {
       setSessions((current) => [created, ...current]);
-      setSessionId(created.id);
+      setActiveSession(created.id);
     } else {
       const local: SessionSummary = {
         id: localSessionId(),
@@ -385,7 +396,7 @@ export default function Home() {
     setRuns([]);
     setView('timeline');
     setSidebarOpen(false);
-  }, []);
+  }, [setActiveSession]);
 
   /* ---------------------------------------------------------------------- */
   /* Running the agent                                                       */
@@ -408,6 +419,21 @@ export default function Home() {
     async (message: string, approvedCallIds: string[] = []) => {
       setBusy(true);
       setError(null);
+
+      // The first message creates the session. Until the server has one,
+      // the run would belong to a local id it has never heard of, and
+      // none of it - the events, the messages, the history - would be
+      // persisted or shown in the sidebar.
+      let target = sessionIdRef.current;
+      if (!target || !sessions.some((session) => session.id === target)) {
+        const created = await createSession('');
+        if (created) {
+          target = created.id;
+          setActiveSession(created.id);
+          setSessions((current) => [created, ...current]);
+        }
+      }
+
       const localId = nextRunId();
       setRuns((previous) => [
         ...previous,
@@ -421,7 +447,7 @@ export default function Home() {
         },
       ]);
       try {
-        const response = await sendChat(message, history(), approvedCallIds, sessionId);
+        const response = await sendChat(message, history(), approvedCallIds, target);
         const { events, unknown } = parseAgentEvents(response.events);
         const text = typeof response.text === 'string' ? response.text : '';
         const pending = response.pendingCall ?? null;
@@ -495,14 +521,26 @@ export default function Home() {
         });
 
         // Name the session after the first message, if the server did not.
+        // The name goes to the server too: a local-only title is lost on
+        // the next reload, and the sidebar would say "Untitled session".
         if (sessionId && response.runId) {
+          const title = deriveTitle(message);
           setSessions((current) =>
             current.map((session) =>
               session.id === sessionId && !session.title
-                ? { ...session, title: deriveTitle(message) }
+                ? { ...session, title }
                 : session,
             ),
           );
+          void updateSession(sessionId, { title }).then((updated) => {
+            if (updated?.title) {
+              setSessions((current) =>
+                current.map((session) =>
+                  session.id === sessionId ? { ...session, title: updated.title! } : session,
+                ),
+              );
+            }
+          });
         }
       } catch (cause) {
         const message =
@@ -524,7 +562,7 @@ export default function Home() {
         setBusy(false);
       }
     },
-    [history, sessionId],
+    [history, sessionId, sessions, setActiveSession],
   );
 
   const submit = useCallback(
@@ -982,8 +1020,6 @@ export default function Home() {
                   ))}
                 </div>
               ) : null}
-
-              <RunHistoryPanel />
 
               <div ref={endRef} />
             </div>
