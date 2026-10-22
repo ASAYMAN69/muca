@@ -73,12 +73,35 @@ proxy, no separate dev server.
 
 ---
 
-## Quick start
+## Running it
+
+Four commands, from the repository root. **One port** — the frontend, the
+API and the MCP endpoint are all served by the same process.
 
 ```bash
-npm install
-cp .env.example .env      # then put a key in ANTHROPIC_API_KEY, OPENAI_API_KEY or GEMINI_API_KEY
+npm install          # install the dependencies
+
+# development — hot reload, one command, one port
 npm run dev
+
+# production
+npm run build        # builds the web app and the server
+npm start            # serves the build on http://localhost:8099
+```
+
+| Command | What it does |
+|---|---|
+| `npm install` | Installs the workspace dependencies. |
+| `npm run dev` | The server in watch mode, with the web app hot-reloading. Boots in ~30 s; the first page load compiles (~12 s), then it is instant. |
+| `npm run build` | Builds the web app (`apps/web/.next`) and the server (`apps/server/dist`). |
+| `npm start` | Serves the build in production mode. Boots in ~20 s, pages load in ~0.1 s. Says so plainly if you have not built yet. |
+| `npm test` | 359 server tests + 76 web tests. |
+| `npm run typecheck` / `npm run lint` | Both workspaces. |
+
+Configuration:
+
+```bash
+cp .env.example .env      # then put a key in ANTHROPIC_API_KEY, OPENAI_API_KEY or GEMINI_API_KEY
 ```
 
 Open <http://localhost:8099/>.
@@ -92,11 +115,17 @@ The server prints what it decided:
   REST API   http://localhost:8099/api/v1
   MCP        http://localhost:8099/api/v1/mcp
   Protocol   2025-11-25
-  AI gateway  auto → anthropic (claude-sonnet-4-5)  probes: anthropic ok 1180ms · openai not_configured · gemini throttled 922ms
+  AI gateway  auto → openai (openai/gpt-oss-120b)  probes: anthropic not_configured · openai ok 5419ms · gemini ok 1098ms
 ```
 
 **No API key is fine.** The MCP server works, the tools are published, and
 the web UI offers a clearly-labelled scripted demo.
+
+> **One thing to know:** the production build and the development server
+> both write to `apps/web/.next`. Do not run `npm run build` while
+> `npm run dev` is running — Next's cache is not safe to share between the
+> two. If the server refuses to start with *"Loading persistence directory
+> failed"*, run `rm -rf apps/web/.next/dev`.
 
 ### Verify the MCP handshake yourself
 
