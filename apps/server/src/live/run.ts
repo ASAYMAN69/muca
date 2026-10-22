@@ -565,6 +565,15 @@ export class LiveRun {
         });
         break;
 
+      case 'text': {
+        // A whole text event, not a delta. The agent emits one of these
+        // when it asks the model for a final summary after running out of
+        // tool rounds. It is the answer, so it must reach the outcome.
+        this.accumulatedText_ += event.text;
+        this.emit('message_delta', { text: event.text });
+        break;
+      }
+
       default:
         // The rest of the agent's events are internal: the frames that
         // matter are the ones the protocol names.
